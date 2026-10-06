@@ -2,9 +2,9 @@
 
 `pinterest-publish` publishes one finished local video Pin through persistent Camoufox. It requires an explicitly bound account, an existing owned board, visibility, both AI disclosure flags, and exact title/description. Calling services own queues and schedules.
 
-The local CLI and controlled browser fixtures are implemented. **The current live Pinterest selectors and final publication have not been accepted by this package.** The supplied UI contract template is deliberately blank. Publication returns `UI_NOT_VERIFIED` until a complete contract passes a visible `accept-ui` rehearsal. That rehearsal uploads a private copy and checks the final editor without clicking Publish; Pinterest may save a draft. Review the draft in Pinterest before later publication.
+The CLI supports repeatable Firefox-session import into persistent Camoufox and a separate visible pre-submit rehearsal for Caribbean Awesome. `examples/caribbeanawesome.pre-submit.json` returns `ui_accepted` with `scope: "pre-submit"` and `publication_enabled: false`; it cannot activate Publish. Rehearsal uploads a private copy and may leave a Pinterest draft. The recorded live schema `1.1.0` remains pre-submit-only in 0.2.0. Publication with that acceptance returns `UI_NOT_VERIFIED` before any Publish click.
 
-A separate manual Firefox run on 2026-10-06 confirmed `@caribbeanawesome`, the public owner board `caribbean-awesome-videos`, acceptance of a 12,977,531 byte 1080×1920 H.264/AAC video lasting 38.1 seconds, both AI controls, and a publicly readable video Pin. The editor showed `Publishing...` and then reset without a causal result URL. This establishes manual product behavior; authenticated Camoufox selectors, exact selected-board URL evidence, processing/timing/published-state evidence and automatic confirmation remain unaccepted. The CLI must return `uncertain` after submission when the causal URL is unavailable.
+An initial manual run on 2026-10-06 confirmed `@caribbeanawesome`, the public owner board `caribbean-awesome-videos`, acceptance of a 12,977,531 byte 1080×1920 H.264/AAC video lasting 38.1 seconds, both AI controls, and a publicly readable video Pin. The editor showed `Publishing...` and then reset without a causal result URL. The 2026-10-07 Camoufox acceptance imported the source Firefox session without launching Firefox and rehearsed the exact topbar account, uploaded video bytes, title/description/link, public board and both AI controls through a trial of the final Publish control. No Publish click was made.
 
 The native version source is `pyproject.toml`; `CHANGELOG.md` records releases. This project follows the [Pinterest publishing plan](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/pinterest.md) and [shared publisher contract](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/contract.md).
 
@@ -34,7 +34,19 @@ uv run pinterest-publish login --account caribbeanawesome \
 uv run pinterest-publish accounts list
 ```
 
-Finish login and 2FA in the visible window, then press Enter in the terminal. A bound alias cannot move to another profile, and a profile cannot acquire a second alias. The profile lock covers login, acceptance, publication and reconciliation; a busy profile fails immediately.
+To reuse the already authorized Firefox account, supply its explicit source profile. Firefox is only a cookie source; all navigation and verification run in Camoufox, and no interactive login is needed:
+
+```sh
+uv run pinterest-publish login --account caribbeanawesome \
+  --profile-url https://www.pinterest.com/caribbeanawesome/ \
+  --display-name 'Caribbean Awesome' \
+  --ui-contract examples/caribbeanawesome.pre-submit.json \
+  --firefox-profile '/Users/suenot/Library/Application Support/Firefox/Profiles/qba575oo.default-release'
+```
+
+The import reads `cookies.sqlite` in read-only mode, includes only ordinary unexpired Pinterest cookies, excludes containers and partitions, preserves host-only domains and paths, and converts millisecond expiry when present. It verifies the active topbar profile URL before binding the alias, restores the previous Pinterest cookies on failure, and retains the same Camoufox profile and fingerprint for later commands. Imported values never appear in JSON output or diagnostics.
+
+For ordinary interactive login, finish login and 2FA in the visible window, then press Enter in the terminal. A bound alias cannot move to another profile, and a profile cannot acquire a second alias. The profile lock covers login, acceptance, publication and reconciliation; a busy profile fails immediately.
 
 The contract contains `schema_version: "1.0.0"`, the exact `target`, `editor_url`, CSS `selectors`, and `labels`. These version numbers describe the local editor evidence separately from editorial metadata. Canonical platform URLs are restricted to `https://pinterest.com` and `https://www.pinterest.com`, without credentials, queries or fragments. Short links, regional redirect URLs, unrelated hosts and ambiguous board paths are rejected. Host/path policy remains deliberately narrow until live acceptance proves another form necessary.
 
@@ -51,6 +63,26 @@ uv run pinterest-publish accept-ui --account caribbeanawesome \
 ```
 
 This records a private screenshot, its SHA-256, adapter revision, runtime and browser build. It never calls `submit`. Publication rechecks account, exact board ownership and visibility, accepted upload bytes/readiness, text/link, AI state, and immediate timing; acceptance is invalidated when the runtime/adapter evidence is incompatible. Unknown or missing UI evidence stops before the submission boundary. Record selectors for post confirmation from a previously inspected real video Pin before activating publication. A preflight alone cannot demonstrate the final success surface or prove a live publication.
+
+## Recorded Camoufox rehearsal
+
+The recorded live contract uses schema `1.1.0` with `scope: "pre-submit"`. It checks the exact signed-in topbar identity, canonical board page and public label, expected sole collaborator UI, selected editor board name, exact Draft.js text, destination, and both AI booleans. Title, description and link are entered serially; a changed field waits for the new sidebar draft's successful ordinary UI save and a drafts GET initiated after that save completed. An unchanged field reuses an already fresh matching snapshot, including an omitted empty link. Requests are ordered when issued and compared using [Playwright's browser request timings](https://playwright.dev/python/docs/api/class-request#request-timing), so delayed Python JSON processing and late responses to earlier GETs cannot establish freshness. No publisher calls to Pinterest's internal API are made. Pinterest removes the file input after upload, so the adapter hashes the actual blob video preview against the private copied file. Every preparation click uses the same guard against the final Publish control and form submission.
+
+For the existing Word quiz package, use the already prepared `video-small.mp4`; the master exceeds Pinterest's web-editor limit. The [source package README](../content/word-quiz-a-miniature/README.md) documents the assets; `metadata.json` provides the exact Pinterest text and `cover.jpg` is its candidate cover. Cover editing is outside this CLI's scope. The existing public Pin is <https://www.pinterest.com/pin/1085297210239623903/>; do not publish it again.
+
+```sh
+uv run pinterest-publish accept-ui --account caribbeanawesome \
+  --ui-contract examples/caribbeanawesome.pre-submit.json \
+  --video '/Users/suenot/Library/CloudStorage/GoogleDrive-suenot@bridgetowncompanies.com/Shared drives/REFORMS/videos/word-quiz-A-miniature/renders/video-small.mp4' \
+  --metadata-file ../content/word-quiz-a-miniature/metadata.json \
+  --board-url https://www.pinterest.com/caribbeanawesome/caribbean-awesome-videos/ \
+  --visibility public --link https://www.youtube.com/shorts/wZqnYESB3Us \
+  --ai-modified yes --ai-generated-person no
+```
+
+**Publication blocker:** the live editor shows the selected board name and a Publish button. Observed draft responses also contained a canonical board ID and `scheduled_ts: null`, but these observations do not prove the active sidebar draft and a fresh board/timing snapshot immediately before Publish. There is also no observed Publish response binding that draft ID to a resulting Pin ID. A new numeric Pin URL or an identical older Pin cannot establish that causal link. Schema `1.1.0` therefore rejects publication even after successful rehearsal; no `scope: "publish"` route is provided. The generic schema `1.0.0` journal and explicit causal success-surface contract remain available for separately verified editors. Interruption or missing causal confirmation after its sole click stays `uncertain` and requires inspection without another click.
+
+The 2026-10-07 guest Camoufox smoke opened that exact Pin without imported cookies and confirmed the scoped author, original board metadata, exact title/description, YouTube destination and playable 38.1-second video. Public readability establishes guest access; the guest UI does not provide literal Published/Public status labels. The live adapter checks the exact original board, readable processed video and clean guest access; the generic schema `1.0.0` adapter retains its explicit authenticated state-label checks. The existing Pin is not a causal result for a new request and is not inserted into a new publication journal row.
 
 ## Publish
 
@@ -129,4 +161,4 @@ CAMOUFOX_EXECUTABLE_PATH=/absolute/path/to/paired/camoufox \
   uv run --group dev pytest -q
 ```
 
-Unit checks cover one-line JSON/codes, metadata v2 validation, video/text boundaries, snapshots/source mutation, locks, binding collisions, ID conflicts, UI acceptance, durable transitions, cached outcomes and manual reconciliation. Controlled Camoufox pages intercept every browser request and cover preflight without Publish, one-click confirmation, account/board/visibility/AI/text/upload/timing mismatches, unsafe preparation selectors, ambiguous/processing results and public/private confirmation paths. Without the explicit paired executable, controlled browser tests are skipped. Live editor selectors, exact board inspection state, success confirmation, actual upload acceptance and any real publication remain acceptance gates; controlled pages cannot establish them.
+Unit checks cover one-line JSON/codes, metadata v2 validation, video/text boundaries, snapshots/source mutation, locks, binding collisions, cookie import/rollback, pre-submit scope rejection, saved-text request ordering, durable transitions, cached outcomes and manual reconciliation. Controlled Camoufox pages intercept every browser request and cover preflight without Publish, the generic one-click journal, account/board/visibility/AI/text/upload/timing mismatches, unsafe preparation selectors, ambiguous results, guest readability and rejection of unbound Pin navigation. Without the explicit paired executable, controlled browser tests are skipped. The 2026-10-07 live Camoufox rehearsal reached the ready Publish control without clicking; the existing Pin was independently readable in guest Camoufox. Active-draft/final board/timing binding and a real future Publish result remain unverified, so the recorded live adapter cannot publish.

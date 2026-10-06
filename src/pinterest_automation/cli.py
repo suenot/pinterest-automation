@@ -60,6 +60,7 @@ def parser():
     log.add_argument("--profile-url", required=True)
     log.add_argument("--display-name", required=True)
     log.add_argument("--ui-contract", required=True)
+    log.add_argument("--firefox-profile", help="Import Pinterest cookies from this Firefox profile, then verify the account in Camoufox without interactive login.")
     for name in ("publish", "accept-ui"):
         command = commands.add_parser(name, parents=[common, runtime])
         command.add_argument("--video", required=True)

@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from conftest import ACCOUNT, Adapter, BOARD, CONTRACT, PIN, fake_session
-from pinterest_automation.browser import accepted_contract, stable_fingerprint, validate_contract
+from pinterest_automation.browser import ADAPTER_REVISION, BROWSER_BUILD, RUNTIME, accepted_contract, stable_fingerprint, validate_contract
 from pinterest_automation.cli import main
 from pinterest_automation.errors import PublishError
 from pinterest_automation.media import copy_video, probe_video, read_text, validate_text
@@ -267,3 +267,43 @@ async def test_invalid_preflight_removes_snapshot_and_keeps_journal_untouched(st
     directory = state.request_dir(arguments.account, arguments.request_id)
     assert list(directory.glob("upload-*")) == []
     assert state.get(arguments.account, arguments.request_id) is None and Adapter.clicks == 0
+
+
+def test_pre_submit_contract_never_enables_publication(state):
+    from pinterest_automation.browser import load_contract
+    path = str(Path(__file__).parents[1] / "examples/caribbeanawesome.pre-submit.json")
+    contract = load_contract(path, ACCOUNT, "pre-submit")
+    assert load_contract(path, ACCOUNT, "login") == contract
+    state.accept_ui("brand", {"adapter_revision": ADAPTER_REVISION,
+        "runtime": RUNTIME,
+        "browser_build": BROWSER_BUILD,
+        "evidence_sha256": "pre-submit", "contract": contract})
+    with pytest.raises(PublishError) as error:
+        accepted_contract(state.account("brand"))
+    assert error.value.code == "UI_NOT_VERIFIED"
+    from pinterest_automation.browser import validate_contract
+    contract["scope"] = "publish"
+    with pytest.raises(PublishError) as error:
+        validate_contract(contract, ACCOUNT, "pre-submit")
+    assert error.value.code == "INVALID_UI_CONTRACT"
+
+
+def test_saved_editor_text_requires_save_after_edit_and_get_issued_after_save():
+    from pinterest_automation.preflight import EditorEvidence
+    evidence = EditorEvidence()
+    save = {"resource_response": {"status": "success"}, "resource": {"options": {"url": "/v3/storypins/drafts/123/"}}}
+    draft = {"id": "123", "type": "storypindata", "draft": {"pin_description": "Exact\ntext"}, "metadata": {"pin_title": "Title"}}
+    get = {"resource_response": {"status": "success", "data": [draft]}, "resource": {"options": {"url": "/v3/users/456/storypins/drafts/"}}}
+    evidence.record("/resource/ApiResource/update/", save, issued=2, started=200, finished=400)
+    evidence.record("/resource/ApiResource/get/", get, issued=3, started=300, finished=500)
+    assert not evidence.field_saved("123", "title", "Title", after=1)  # Late response to an early GET.
+    evidence.record("/resource/ApiResource/get/", get, issued=6, started=450, finished=700)
+    assert evidence.field_saved("123", "title", "Title", after=1)
+    assert not evidence.field_saved("123", "title", "Title", after=2)  # Save predates this edit.
+    assert not evidence.field_saved("another", "title", "Title", after=1)
+    assert evidence.field_saved("123", "description", "Exact\ntext", after=1)
+    assert not evidence.field_saved("123", "description", "Exact text", after=1)
+    assert evidence.field_saved("123", "link", "")  # Unchanged empty field reuses the fresh snapshot.
+    changed = {**get, "resource_response": {"status": "success", "data": []}}
+    evidence.record("/resource/ApiResource/get/", changed, issued=3, started=300, finished=800)
+    assert evidence.field_saved("123", "title", "Title", after=1)  # Older-issued responses cannot replace a newer snapshot.

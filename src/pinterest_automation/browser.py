@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .errors import PublishError
 from .state import board_url, pin_url, pinterest_url, private_dir, profile_url
 
-ADAPTER_REVISION = "pinterest-video-pin-1"
+ADAPTER_REVISION = "pinterest-video-pin-2"
 RUNTIME = {"camoufox": "0.5.7", "playwright": "1.60.0"}
 BROWSER_BUILD = "official/156.0.1-beta.34"
 SELECTORS = {
@@ -38,7 +38,10 @@ def authenticated_url(value: str):
         raise PublishError("LOGIN_REQUIRED", "Pinterest requires visible login or 2FA before continuing.")
 
 
-def validate_contract(value: object, expected: dict) -> dict:
+def validate_contract(value: object, expected: dict, stage="publish") -> dict:
+    if isinstance(value, dict) and value.get("schema_version") == "1.1.0":
+        from .preflight import validate_preflight_contract
+        return validate_preflight_contract(value, expected, stage)
     keys = {"schema_version", "target", "editor_url", "selectors", "labels"}
     if not isinstance(value, dict) or set(value) != keys or value["schema_version"] != "1.0.0":
         raise PublishError("INVALID_UI_CONTRACT", "Use the complete local UI contract with schema_version 1.0.0.")
@@ -56,12 +59,12 @@ def validate_contract(value: object, expected: dict) -> dict:
     return value
 
 
-def load_contract(path: str, expected: dict) -> dict:
+def load_contract(path: str, expected: dict, stage="publish") -> dict:
     try:
         document = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError) as exc:
         raise PublishError("INVALID_UI_CONTRACT", "Cannot read the local UI contract.") from exc
-    return validate_contract(document, expected)
+    return validate_contract(document, expected, stage)
 
 
 def accepted_contract(account: dict) -> dict:
@@ -143,6 +146,13 @@ async def browser_session(profile: Path, headless=False):
 
 
 
+def editor_adapter(context, contract, diagnostics):
+    if contract["schema_version"] == "1.1.0":
+        from .preflight import PinterestPreflight
+        return PinterestPreflight(context, contract, diagnostics)
+    return PinterestEditor(context, contract, diagnostics)
+
+
 async def one(locator, description):
     count = await locator.count()
     if count != 1:
@@ -167,8 +177,7 @@ class PinterestEditor:
 
     async def control(self, name: str, scope=None, visible=True):
         locator = self.selector(name, scope)
-        if visible:
-            await locator.wait_for(state="visible")
+        await locator.wait_for(state="visible" if visible else "attached")
         return await one(locator, name)
 
     async def state_label(self, name, label, scope=None, code="UI_STATE_UNVERIFIED"):
@@ -308,6 +317,7 @@ class PinterestEditor:
         control = await self.control(name, post)
         return await control.evaluate(r"""element => {
             const text = node => node.nodeType === Node.TEXT_NODE ? node.nodeValue :
+                ['STYLE', 'SCRIPT'].includes(node.nodeName) || node.getAttribute?.('data-test-id') === 'more-description-container' ? '' :
                 node.nodeName === 'BR' ? '\n' : Array.from(node.childNodes).map(text).join('');
             return text(element);
         }""")
@@ -369,14 +379,14 @@ class PinterestEditor:
         editor = await self.control("editor")
         await (await self.control("publish_button", editor)).click(no_wait_after=True)
 
-    async def verify_post(self, url, expected, details, page=None):
+    async def verify_post(self, url, expected, details, page=None, public=False):
         page = self.page if page is None else page
         await page.goto(pin_url(url), wait_until="domcontentloaded")
         if observed_pin_url(page.url) != url:
             raise PublishError("POST_UNCONFIRMED", "Result did not open the specific submitted Pin.", 4)
         post = await self.control("post", page)
         await self.actor("post_actor_link", expected, post)
-        board = await self.control("post_board_link", post)
+        board = await self.control("post_board_link", post, visible=not public)
         if board_url(await self.href(board) or "") != details["board_url"]:
             raise PublishError("POST_UNCONFIRMED", "Pin board differs from the requested board.", 4)
         for name in ("title", "description"):
@@ -398,8 +408,9 @@ class PinterestEditor:
                 await handle.dispose()
         if not await video.evaluate("element => element.tagName === 'VIDEO' && element.readyState >= 1 && element.videoWidth > 0 && element.videoHeight > 0 && element.duration >= 4 && element.duration <= 300"):
             raise PublishError("POST_UNCONFIRMED", "Pin video is not fully accepted and readable.", 4)
-        await self.state_label("post_status", "published", post, "POST_UNCONFIRMED")
-        await self.state_label("post_visibility", details["visibility"] + "_board", post, "POST_UNCONFIRMED")
+        if not public:
+            await self.state_label("post_status", "published", post, "POST_UNCONFIRMED")
+            await self.state_label("post_visibility", details["visibility"] + "_board", post, "POST_UNCONFIRMED")
 
     async def verify_public(self, url, expected, details):
         if details["visibility"] != "public":
@@ -410,7 +421,7 @@ class PinterestEditor:
         public_context = await browser.new_context(locale="en-US")
         try:
             page = await public_context.new_page()
-            await self.verify_post(url, expected, details, page)
+            await self.verify_post(url, expected, details, page, public=True)
         finally:
             await public_context.close()
 

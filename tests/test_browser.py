@@ -274,3 +274,39 @@ async def test_relative_actor_uses_owner_document_and_empty_href_fails(browser, 
         with pytest.raises(PublishError) as error:
             await adapter.verify_identity(ACCOUNT)
         assert error.value.code == "LOGIN_REQUIRED" and fixture.clicks == 0
+
+
+async def test_guest_pin_uses_readability_and_ignores_description_ui(browser, tmp_path, arguments):
+    context, fixture, session = browser
+    adapter, details = await adapter_ready(browser, tmp_path, arguments)
+    details["visibility"] = "public"
+    original = fixture.post
+
+    def public_post():
+        return original().replace('id=post_board_link', 'id=post_board_link hidden').replace(
+            f'<span id=post_status>{fixture.post_ready}</span><span id=post_visibility>{fixture.board_visibility}</span>', '').replace(
+            '</pre>', '<style>.irrelevant{color:red}</style><span data-test-id="more-description-container"> ... more</span></pre>')
+
+    fixture.post = public_post
+    await adapter.verify_public(PIN, ACCOUNT, details)
+    assert fixture.clicks == 0
+
+
+async def test_live_rehearsal_rejects_publish_and_unbound_pin_navigation(browser, tmp_path, arguments):
+    from pinterest_automation.preflight import PinterestPreflight
+    context, fixture, session = browser
+    contract = deepcopy(CONTRACT)
+    contract["scope"] = "publish"  # Even an unvalidated injected scope cannot activate this adapter.
+    adapter = PinterestPreflight(context, contract, tmp_path / "diagnostics")
+    adapter.page = await context.new_page()
+    await adapter.page.goto(CONTRACT["editor_url"])
+    details = normalized(arguments)
+    adapter.prepared_request = (ACCOUNT, details)
+    with pytest.raises(PublishError) as error:
+        await adapter.submit()
+    assert error.value.code == "UI_NOT_VERIFIED" and fixture.clicks == 0
+
+    await adapter.page.goto(PIN)
+    with pytest.raises(PublishError) as error:
+        await adapter.confirm(ACCOUNT, details)
+    assert error.value.code == "UNCONFIRMED_POST" and adapter.post_url is None and fixture.clicks == 0

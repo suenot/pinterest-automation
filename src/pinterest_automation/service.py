@@ -6,11 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import re
 import sys
 import tempfile
 
-from .browser import ADAPTER_REVISION, BROWSER_BUILD, RUNTIME, PinterestEditor, accepted_contract, browser_session, load_contract
+from .browser import ADAPTER_REVISION, BROWSER_BUILD, RUNTIME, editor_adapter, accepted_contract, browser_session, load_contract
 from .errors import PublishError
+from .firefox import pinterest_cookies
 from .media import copy_video, probe_video, read_text
 from .state import State, board_url, canonical, destination_url, pin_url, profile_url, result
 
@@ -58,7 +60,7 @@ def cleanup_temporary(path: Path):
         print(f"Could not remove private temporary directory {path}; remove it manually.", file=sys.stderr)
 
 
-async def publish(state: State, args, session_factory=browser_session, adapter_factory=PinterestEditor):
+async def publish(state: State, args, session_factory=browser_session, adapter_factory=editor_adapter):
     with state.lock(args.account):
         account = state.account(args.account)
         arguments = normalized(args)
@@ -139,33 +141,47 @@ async def wait_for_enter():
         loop.remove_reader(descriptor)
 
 
-async def login(state: State, args, session_factory=browser_session, adapter_factory=PinterestEditor):
+async def login(state: State, args, session_factory=browser_session, adapter_factory=editor_adapter):
     url = profile_url(args.profile_url)
     expected = {"profile_url": url, "username": url.split("/")[-2], "display_name": args.display_name}
     if not args.display_name.strip():
         raise PublishError("INVALID_DISPLAY_NAME", "Expected display name must be nonempty.")
-    contract = load_contract(args.ui_contract, expected)
+    contract = load_contract(args.ui_contract, expected, "login")
     with state.lock(args.account):
+        bindings = [account for account in state.accounts() if account["account"] == args.account or account["profile_url"] == url]
+        if any(account["account"] != args.account or account["profile_url"] != url for account in bindings):
+            raise PublishError("ACCOUNT_BINDING_CONFLICT", "Alias or canonical Pinterest profile is already bound differently.")
+        imported = pinterest_cookies(args.firefox_profile) if getattr(args, "firefox_profile", None) else None
         async with asyncio.timeout(args.timeout_seconds):
             async with session_factory(state.profile(args.account), False) as context:
                 adapter = adapter_factory(context, contract, state.root / "accounts" / args.account / "diagnostics")
-                adapter.page = await context.new_page()
-                await adapter.page.goto(expected["profile_url"], wait_until="domcontentloaded")
-                print("Sign in, finish 2FA and switch to the explicitly requested Pinterest profile in Camoufox. Press Enter here when ready.", file=sys.stderr)
-                await wait_for_enter()
+                previous = None
+                domain = re.compile(r"^(?:\.)?(?:www\.)?pinterest\.com$")
                 try:
+                    if imported is not None:
+                        previous = [cookie for cookie in await context.cookies() if domain.fullmatch(cookie["domain"])]
+                        await context.clear_cookies(domain=domain)
+                        await context.add_cookies(imported)
+                    adapter.page = await context.new_page()
+                    await adapter.page.goto(expected["profile_url"], wait_until="domcontentloaded")
+                    if imported is None:
+                        print("Sign in, finish 2FA and switch to the explicitly requested Pinterest profile in Camoufox. Press Enter here when ready.", file=sys.stderr)
+                        await wait_for_enter()
                     await adapter.verify_identity(expected)
                     state.bind(args.account, expected)
                 except BaseException as exc:
+                    if previous is not None:
+                        await context.clear_cookies(domain=domain)
+                        await context.add_cookies(previous)
                     raise await diagnostic_error(exc, adapter, False) from exc
         return {"platform": "pinterest", "account": args.account, "status": "authenticated", "error": None}, 0
 
 
-async def accept_ui(state: State, args, session_factory=browser_session, adapter_factory=PinterestEditor):
+async def accept_ui(state: State, args, session_factory=browser_session, adapter_factory=editor_adapter):
     """Visible rehearsal: no journal submission, no call to submit()."""
     with state.lock(args.account):
         account = state.account(args.account)
-        contract = load_contract(args.ui_contract, account)
+        contract = load_contract(args.ui_contract, account, "pre-submit")
         directory = state.root / "accounts" / args.account
         temporary = Path(tempfile.mkdtemp(prefix="preflight-", dir=directory))
         try:
@@ -188,12 +204,15 @@ async def accept_ui(state: State, args, session_factory=browser_session, adapter
                             "evidence_path": str(evidence), "contract": contract})
                     except BaseException as exc:
                         raise await diagnostic_error(exc, adapter, False) from exc
-            return {"platform": "pinterest", "account": args.account, "status": "ui_accepted", "evidence_path": str(evidence), "error": None}, 0
+            output = {"platform": "pinterest", "account": args.account, "status": "ui_accepted", "evidence_path": str(evidence), "error": None}
+            if contract.get("scope") == "pre-submit":
+                output.update(scope="pre-submit", publication_enabled=False)
+            return output, 0
         finally:
             cleanup_temporary(temporary)
 
 
-async def reconcile(state: State, args, session_factory=browser_session, adapter_factory=PinterestEditor):
+async def reconcile(state: State, args, session_factory=browser_session, adapter_factory=editor_adapter):
     """Explicit manual video attestation plus read-only verification of one Pin."""
     with state.lock(args.account):
         account = state.account(args.account)
