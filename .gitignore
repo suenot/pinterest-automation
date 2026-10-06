@@ -1,0 +1,9 @@
+# Private account profiles, request journals, media copies, and diagnostics.
+.local/
+
+# Local Python development files.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
