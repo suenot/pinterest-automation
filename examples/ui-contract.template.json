@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0.0",
+  "target": {
+    "profile_url": "https://www.pinterest.com/caribbeanawesome/",
+    "username": "caribbeanawesome",
+    "display_name": "Caribbean Awesome"
+  },
+  "editor_url": "https://www.pinterest.com/pin-creation-tool/",
+  "selectors": {
+    "ai_generated_person": "",
+    "ai_modified": "",
+    "board_collaboration": "",
+    "board_menu": "",
+    "board_option": "",
+    "board_owner_link": "",
+    "board_visibility": "",
+    "composer_actor_link": "",
+    "current_actor_link": "",
+    "description": "",
+    "editor": "",
+    "link": "",
+    "post": "",
+    "post_actor_link": "",
+    "post_board_link": "",
+    "post_description": "",
+    "post_link": "",
+    "post_status": "",
+    "post_title": "",
+    "post_video": "",
+    "post_visibility": "",
+    "profile_visibility": "",
+    "publication_timing": "",
+    "publish_button": "",
+    "result_link": "",
+    "selected_board_link": "",
+    "success": "",
+    "title": "",
+    "upload": "",
+    "upload_ready": ""
+  },
+  "labels": {
+    "immediate": "",
+    "private_board": "",
+    "private_profile": "",
+    "public_board": "",
+    "public_profile": "",
+    "published": "",
+    "solo_board": "",
+    "upload_ready": ""
+  }
+}
