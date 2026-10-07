@@ -190,6 +190,8 @@ async def accept_ui(state: State, args, session_factory=browser_session, adapter
             async with asyncio.timeout(args.timeout_seconds):
                 async with session_factory(state.profile(args.account), False) as context:
                     adapter = adapter_factory(context, contract, directory / "diagnostics")
+                    cleanup_attempted = False
+                    cleanup_succeeded = False
                     try:
                         await adapter.open_editor(account)
                         await adapter.prepare(video, details)
@@ -200,12 +202,29 @@ async def accept_ui(state: State, args, session_factory=browser_session, adapter
                         with evidence.open("rb") as stream:
                             digest = hashlib.file_digest(stream, "sha256").hexdigest()
                         if contract["schema_version"] in {"1.1.0", "1.2.0"}:
+                            cleanup_attempted = True
                             await adapter.discard_rehearsal_draft()
+                            cleanup_succeeded = True
                         state.accept_ui(args.account, {"adapter_revision": ADAPTER_REVISION, "runtime": RUNTIME, "browser_build": BROWSER_BUILD,
                             "confirmed_at": datetime.now(timezone.utc).isoformat(), "evidence_sha256": digest,
                             "evidence_path": str(evidence), "contract": contract})
                     except BaseException as exc:
-                        raise await diagnostic_error(exc, adapter, False) from exc
+                        error = await diagnostic_error(exc, adapter, False)
+                        draft_id = getattr(adapter, "draft_id", None)
+                        cleanup_failure = None
+                        if (contract["schema_version"] in {"1.1.0", "1.2.0"} and draft_id
+                                and not cleanup_attempted and not getattr(adapter, "submitted", False)):
+                            cleanup_attempted = True
+                            try:
+                                await adapter.discard_rehearsal_draft()
+                                cleanup_succeeded = True
+                            except BaseException as cleanup_exc:
+                                cleanup_failure = cleanup_exc
+                        if draft_id and cleanup_attempted and not cleanup_succeeded:
+                            reason = cleanup_failure or exc
+                            code = reason.code if isinstance(reason, PublishError) else type(reason).__name__
+                            error = PublishError(error.code, f"{error.message} Fresh rehearsal draft {draft_id} cleanup is unconfirmed ({code}); inspect this ID manually.", error.exit_code)
+                        raise error from exc
             output = {"platform": "pinterest", "account": args.account, "status": "ui_accepted", "evidence_path": str(evidence), "error": None}
             if contract.get("scope") == "pre-submit":
                 output.update(scope="pre-submit", publication_enabled=False)

@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-08
+
+### Fixed
+
+- Clean up the exact fresh draft bound during a failed editor acceptance before Publish when the draft's own UI delete is available. Preserve the original failure and report its draft ID if cleanup cannot be confirmed.
+
 ## [0.3.0] - 2026-10-08
 
 ### Added

@@ -329,6 +329,42 @@ async def test_live_acceptance_discards_its_fresh_draft_before_recording(state, 
     assert state.account("brand")["ui_contract"] != previous
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_failed_live_acceptance_cleans_only_its_bound_fresh_draft(state, arguments, cleanup_fails):
+    arguments.ui_contract = str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json")
+    previous = state.account("brand")["ui_contract"]
+    class Rehearsal:
+        draft_id = None
+        submitted = False
+        cleanup_calls = 0
+        def __init__(self, *_):
+            pass
+        async def open_editor(self, *_):
+            pass
+        async def prepare(self, *_):
+            self.draft_id = "12345"  # Fresh ID bound during this invocation.
+        async def verify(self, *_):
+            raise PublishError("TEXT_MISMATCH", "Original preflight failure", 3)
+        async def screenshot(self, *_):
+            return None
+        async def discard_rehearsal_draft(self):
+            self.cleanup_calls += 1
+            if cleanup_fails:
+                raise PublishError("DRAFT_CLEANUP_UNVERIFIED", "Deletion response missing", 3)
+    instance = None
+    def make(*args):
+        nonlocal instance
+        instance = Rehearsal(*args)
+        return instance
+    with pytest.raises(PublishError) as failure:
+        await accept_ui(state, arguments, fake_session, make)
+    assert failure.value.code == "TEXT_MISMATCH" and instance.cleanup_calls == 1
+    assert state.account("brand")["ui_contract"] == previous
+    assert ("12345" in failure.value.message) == cleanup_fails
+    if cleanup_fails:
+        assert "DRAFT_CLEANUP_UNVERIFIED" in failure.value.message
+
+
 async def test_live_creation_result_requires_unique_create_and_active_draft_delete(tmp_path):
     from pinterest_automation.browser import load_contract
     from pinterest_automation.preflight import PinterestLivePublisher
