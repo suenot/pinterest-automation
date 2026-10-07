@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.2.0",
+  "scope": "publish",
+  "target": {
+    "profile_url": "https://www.pinterest.com/caribbeanawesome/",
+    "username": "caribbeanawesome",
+    "display_name": "Caribbean Awesome"
+  },
+  "editor_url": "https://www.pinterest.com/pin-creation-tool/",
+  "board": {
+    "url": "https://www.pinterest.com/caribbeanawesome/caribbean-awesome-videos/",
+    "name": "Caribbean Awesome Videos",
+    "id": "1085297278893878117"
+  },
+  "selectors": {
+    "current_actor_link": "[role=\"banner\"] a[aria-label=\"Your profile\"]",
+    "editor": "[role=\"main\"]",
+    "upload": "input[data-test-id=\"storyboard-upload-input\"]",
+    "upload_ready": "video:not([data-test-id=\"storyboard-drafts-sidebar\"] video)",
+    "title": "#storyboard-selector-title",
+    "description": "[data-test-id=\"storyboard-description-field-container\"] [contenteditable=\"true\"]",
+    "link": "#WebsiteField",
+    "board_menu": "[data-test-id=\"board-dropdown-select-button\"]",
+    "board_option": "[data-test-id=\"board-row-Caribbean Awesome Videos\"]",
+    "selected_board_label": "[data-test-id=\"board-dropdown-item-selected\"]",
+    "selected_draft": "[data-test-id^=\"pinDraft-\"] [data-test-id=\"pin-draft-content-container\"][style*=\"var(--color-border-default)\"]",
+    "ai_modified": "[data-test-id=\"ai-disclosure-switch\"] input[type=\"checkbox\"]:not([id$=\"-synthetic-performer\"])",
+    "ai_generated_person": "input[type=\"checkbox\"][id$=\"-synthetic-performer\"]",
+    "publish_button": "[data-test-id=\"storyboard-creation-nav-done\"] button",
+    "board_title": "[data-test-id=\"board-header-details\"] #board-name",
+    "board_visibility": "[data-test-id=\"board-header-details\"] [data-test-id=\"public-board-icon-label\"]",
+    "board_collaboration": "[data-test-id=\"board-header-details\"] [role=\"button\"][aria-label^=\"Collaborators:\"]",
+    "post": "[data-test-id=\"CloseupMainPin\"]",
+    "post_actor_link": "[data-test-id=\"creator-profile-link\"]",
+    "post_board_link": "[data-test-id=\"pin-metadata-drawer-original-board-section\"] a",
+    "post_title": "[data-test-id=\"pin-title\"] h1",
+    "post_description": "[data-test-id=\"truncated-description\"] [data-test-id=\"safeTextDirection\"] > div",
+    "post_link": "a[data-test-id=\"clickthrough-link\"]",
+    "post_video": "video[data-test-id=\"duplo-hls-video\"]"
+  }
+}

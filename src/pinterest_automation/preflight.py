@@ -1,11 +1,16 @@
-"""Recorded Pinterest web adapter with a separate pre-submit-only contract."""
+"""Recorded Pinterest editor contracts for rehearsal and guarded publication."""
 
 import asyncio
+import json
+import os
 import re
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
 
-from .browser import PinterestEditor, authenticated_url
+from .browser import PinterestEditor, authenticated_url, browser_session, observed_pin_url
 from .errors import PublishError
 from .state import board_url, pinterest_url
 
@@ -51,21 +56,27 @@ class EditorEvidence:
 
 
 def validate_preflight_contract(value, expected, stage):
-    if set(value) != {"schema_version", "scope", "target", "editor_url", "board", "selectors"} or value["scope"] != "pre-submit":
-        raise PublishError("INVALID_UI_CONTRACT", "Schema 1.1.0 supports only a recorded pre-submit rehearsal.")
+    publish_scope = value.get("schema_version") == "1.2.0" and value.get("scope") == "publish"
+    preflight_scope = value.get("schema_version") == "1.1.0" and value.get("scope") == "pre-submit"
+    if set(value) != {"schema_version", "scope", "target", "editor_url", "board", "selectors"} or not (preflight_scope or publish_scope):
+        raise PublishError("INVALID_UI_CONTRACT", "Use a recorded pre-submit 1.1.0 or publish 1.2.0 contract.")
     if value["target"] != {name: expected[name] for name in ("profile_url", "username", "display_name")}:
         raise PublishError("ACCOUNT_MISMATCH", "Recorded editor contract target differs from the bound Pinterest profile.")
     selectors = value["selectors"]
-    if not isinstance(selectors, dict) or set(selectors) not in (SELECTORS, SELECTORS | POST_SELECTORS) or any(not isinstance(item, str) or not item.strip() for item in selectors.values()):
+    allowed_selectors = SELECTORS | {"selected_draft"} | POST_SELECTORS if publish_scope else SELECTORS
+    if not isinstance(selectors, dict) or (set(selectors) != allowed_selectors if publish_scope else set(selectors) not in (SELECTORS, SELECTORS | POST_SELECTORS)) or any(not isinstance(item, str) or not item.strip() for item in selectors.values()):
         raise PublishError("INVALID_UI_CONTRACT", "Record every pre-submit control selector.")
     board = value["board"]
-    if not isinstance(board, dict) or set(board) != {"url", "name"} or not isinstance(board["name"], str) or not board["name"].strip():
+    board_keys = {"url", "name", "id"} if publish_scope else {"url", "name"}
+    if not isinstance(board, dict) or set(board) != board_keys or not isinstance(board["name"], str) or not board["name"].strip() or (publish_scope and (not isinstance(board["id"], str) or not re.fullmatch(r"[0-9]+", board["id"]))):
         raise PublishError("INVALID_UI_CONTRACT", "Record the exact board URL and name for this rehearsal.")
     if board_url(board["url"]) != board["url"] or board["url"].split("/")[3] != expected["username"]:
         raise PublishError("BOARD_OWNERSHIP_MISMATCH", "Rehearsal board must belong to the bound canonical username.")
     pinterest_url(value["editor_url"])
-    if stage not in {"login", "pre-submit"}:
+    if stage == "publish" and not publish_scope:
         raise PublishError("UI_NOT_VERIFIED", "Recorded live editor acceptance is pre-submit-only: active draft, final board/timing and this Publish's causal result remain unverified.", 3)
+    if stage not in {"login", "pre-submit", "publish"}:
+        raise PublishError("INVALID_UI_CONTRACT", "Unknown UI contract stage.")
     return value
 
 
@@ -178,7 +189,12 @@ class PinterestPreflight(PinterestEditor):
                 for index, line in enumerate(value.split("\n")):
                     if index:
                         await control.press("Enter")
-                    await control.press_sequentially(line, delay=5)
+                    for segment in re.findall(r"[\x00-\x7f]+|[^\x00-\x7f]+", line):
+                        if segment.isascii():
+                            await control.press_sequentially(segment, delay=5)
+                        else:
+                            if not await control.evaluate('(element, text) => document.execCommand("insertText", false, text)', segment):
+                                raise PublishError("TEXT_MISMATCH", "Browser could not insert Unicode description text.")
             else:
                 await control.fill(value)
             await control.press("Tab")
@@ -239,13 +255,227 @@ class PinterestPreflight(PinterestEditor):
         await publish.click(trial=True)
         self.prepared_request = (expected, details)
 
+    async def discard_rehearsal_draft(self):
+        """Remove only the new draft created by this successful acceptance."""
+        if not self.draft_id:
+            raise PublishError("DRAFT_UNVERIFIED", "No fresh rehearsal draft is bound for cleanup.", 3)
+        row = self.page.locator(f'[data-test-id="pinDraft-{self.draft_id}"]')
+        if await row.count() != 1:
+            raise PublishError("DRAFT_UNVERIFIED", "Fresh rehearsal draft is no longer unique.", 3)
+        await row.get_by_role("button", name="Pin draft actions").click()
+        await self.page.locator('[data-test-id="delete-draft-action"]').click()
+        dialog = self.page.get_by_role("dialog")
+        async with self.page.expect_response(lambda response: response.request.method == "POST" and urlsplit(response.url).path == "/resource/ApiResource/delete/") as pending:
+            await dialog.get_by_role("button", name="Delete", exact=True).click()
+        response = await pending.value
+        payload = await response.json()
+        if (response.status != 200 or payload.get("resource", {}).get("options", {}).get("url") != f"/v3/storypins/drafts/{self.draft_id}/"
+                or payload.get("resource_response", {}).get("status") != "success"):
+            raise PublishError("DRAFT_CLEANUP_UNVERIFIED", "Pinterest did not confirm deletion of this acceptance's draft.", 3)
+        await row.wait_for(state="detached")
+
     async def submit(self):
         raise PublishError("UI_NOT_VERIFIED", "The recorded live adapter supports only pre-submit rehearsal and cannot click Publish.", 3)
 
     async def verify_post(self, url, expected, details, page=None, public=False):
-        # The live Pin has no literal Published/Public labels. Exact readable video
-        # plus the checked original public board and a clean guest view prove access.
-        await super().verify_post(url, expected, details, page, public=True)
+        # Story Pin closeup markup differs from ordinary Pin closeups. Its own
+        # page proves content; the owner board separately proves membership.
+        if public:
+            await super().verify_post(url, expected, details, page, public=True)
+            guest_page = self.page if page is None else page
+            if details["ai_modified"] and await guest_page.get_by_text("AI modified", exact=True).count() != 1:
+                raise PublishError("POST_UNCONFIRMED", "Public Pin AI disclosure is missing.", 4)
+            return
+        page = self.page if page is None else page
+        url = observed_pin_url(url)
+        await page.goto(url, wait_until="domcontentloaded")
+        if observed_pin_url(page.url) != url:
+            raise PublishError("POST_UNCONFIRMED", "The requested Pin redirected.", 4)
+        post = page.locator('[data-test-id="description-content-container"]')
+        await post.wait_for(state="visible")
+        await self.actor("post_actor_link", expected, post)
+        title = post.locator('[data-test-id="pinTitle"]')
+        if await title.count() != 1 or await title.inner_text() != details["title"]:
+            raise PublishError("POST_UNCONFIRMED", "Published Pin title differs from this request.", 4)
+        expanded = post.locator('[data-test-id="product-description-expand-cta"]')
+        if await expanded.count() and await expanded.inner_text() == "See more":
+            await expanded.click()
+        description = post.locator('[data-test-id="structured-description"]')
+        if await description.count() != 1 or await description.inner_text() != " ".join(details["description"].split()):
+            raise PublishError("POST_UNCONFIRMED", "Published Pin description differs from this request.", 4)
+        if details["link"]:
+            link = post.locator('a[href="' + details["link"] + '"]')
+            if await link.count() != 1:
+                raise PublishError("POST_UNCONFIRMED", "Published Pin destination differs from this request.", 4)
+        else:
+            external = await post.locator('a[href]').evaluate_all("nodes => nodes.filter(node => { const host = new URL(node.href).hostname; return host !== 'pinterest.com' && !host.endsWith('.pinterest.com'); }).length")
+            if external:
+                raise PublishError("POST_UNCONFIRMED", "Published Pin unexpectedly has a destination link.", 4)
+        video = page.locator('video[data-test-id="duplo-hls-video"]')
+        await video.wait_for(state="visible")
+        media = await video.evaluate("element => ({duration: element.duration, width: element.videoWidth, height: element.videoHeight})")
+        if not 4 <= media["duration"] <= 300 or min(media["width"], media["height"]) <= 0:
+            raise PublishError("POST_UNCONFIRMED", "Published Pin video is not readable.", 4)
+        if details["ai_modified"] and await page.get_by_text("AI modified", exact=True).count() != 1:
+            raise PublishError("POST_UNCONFIRMED", "Published Pin AI disclosure is missing.", 4)
+        if not public:
+            await self.verify_board(expected, details)
+            board = await self.context.new_page()
+            try:
+                await board.goto(details["board_url"], wait_until="domcontentloaded")
+                await board.locator('a[href="/pin/' + url.split("/")[4] + '/"]').first.wait_for(state="attached")
+            finally:
+                await board.close()
+
+    async def verify_public(self, url, expected, details):
+        if details["visibility"] != "public":
+            return
+        # Persistent Camoufox contexts have no Browser.new_context(). A distinct
+        # temporary profile proves the Pin is readable without account cookies.
+        temporary = Path(tempfile.mkdtemp(prefix="guest-pin-", dir=self.diagnostics))
+        try:
+            async with browser_session(temporary / "profile", True) as guest:
+                page = await guest.new_page()
+                await self.verify_post(url, expected, details, page, public=True)
+        finally:
+            shutil.rmtree(temporary)
 
     async def confirm(self, expected, details):
         raise PublishError("UNCONFIRMED_POST", "No observed response binds this editor's Publish to a concrete Pin; navigation alone cannot confirm publication.", 4)
+
+
+def pin_ids_from_creation(data):
+    """Accept only explicit Pin identities in a mutation result, not arbitrary IDs."""
+    found = set()
+    def visit(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"pin_id", "published_pin_id", "story_pin_id"} and isinstance(item, str) and re.fullmatch(r"[0-9]+", item):
+                    found.add(item)
+                elif key in {"pin_url", "url"} and isinstance(item, str):
+                    try:
+                        found.add(observed_pin_url(item).split("/")[4])
+                    except PublishError:
+                        pass
+                elif key == "id" and isinstance(item, str) and re.fullmatch(r"[0-9]+", item) and value.get("type") in {"pin", "storypin", "storypindata"}:
+                    found.add(item)
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(data)
+    return found
+
+
+class PinterestLivePublisher(PinterestPreflight):
+    """One recorded editor publication, with a fresh draft and causal response."""
+
+    def __init__(self, context, contract, diagnostics):
+        super().__init__(context, contract, diagnostics)
+        self.inner_draft_id = None
+        self.publish_ready = asyncio.Event()
+        self.publish_urls = set()
+        self.publish_tasks = set()
+        self.created_pin_ids = set()
+        self.active_draft_deleted = False
+
+    async def verify(self, expected, details):
+        await super().verify(expected, details)
+        if (details["ai_modified"], details["ai_generated_person"]) != (True, False):
+            raise PublishError("UI_NOT_VERIFIED", "This live editor evidence covers only AI-modified video without an AI-generated person.", 3)
+        selected = await self.control("selected_draft")
+        selected_id = await selected.evaluate("element => element.closest('[data-test-id^=pinDraft-]')?.getAttribute('data-test-id')")
+        if selected_id != f"pinDraft-{self.draft_id}":
+            raise PublishError("DRAFT_UNVERIFIED", "The active sidebar draft differs from the newly uploaded video draft.", 3)
+        def saved_draft_matches():
+            entry = self.evidence.drafts.get(self.draft_id, {})
+            draft, metadata = entry.get("draft", {}), entry.get("metadata", {})
+            saved = self.evidence.saves.get(self.draft_id)
+            return (saved is not None and self.evidence.drafts_started > saved[1]
+                    and entry.get("id") == self.draft_id
+                    and metadata.get("pin_title") == details["title"]
+                    and draft.get("pin_description") == details["description"]
+                    and (draft.get("link") or "") == details["link"]
+                    and draft.get("board_id") == self.contract["board"]["id"]
+                    and "scheduled_ts" in draft and draft["scheduled_ts"] is None
+                    and draft.get("ai_disclosures") == [1])
+        try:
+            await self.wait_evidence(saved_draft_matches)
+        except TimeoutError:
+            raise PublishError("DRAFT_UNVERIFIED", "The active draft's final board, timing, text, link and AI state were not saved together after the last edit.", 3) from None
+        self.inner_draft_id = self.evidence.drafts[self.draft_id]["draft"]["id"]
+        self.before_urls.update(await self.existing_pin_urls())
+
+    def record_shape(self, summary):
+        path = self.diagnostics / "publish-response-shapes.jsonl"
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(summary, sort_keys=True) + "\n")
+
+    async def capture_publish(self, response):
+        request = response.request
+        endpoint = urlsplit(response.url)
+        if (request.method != "POST" or endpoint.hostname != "www.pinterest.com"
+                or not endpoint.path.startswith("/resource/") or endpoint.path == "/resource/ApiCResource/create/"):
+            return
+        raw_request = request.post_data or ""
+        draft_ids = {self.draft_id, self.inner_draft_id}
+        bound = any(re.search(r"(?<![0-9])" + re.escape(item) + r"(?![0-9])", raw_request) for item in draft_ids if item)
+        summary = {"path": endpoint.path, "status": response.status, "draft_bound": bound}
+        try:
+            payload = await response.json()
+            resource = payload.get("resource", {}) if isinstance(payload, dict) else {}
+            options = resource.get("options", {}) if isinstance(resource, dict) else {}
+            result = payload.get("resource_response", {}) if isinstance(payload, dict) else {}
+            data = result.get("data") if isinstance(result, dict) else None
+            summary["options_path"] = urlsplit(options.get("url", "")).path if isinstance(options, dict) and isinstance(options.get("url"), str) else ""
+            summary["result_status"] = result.get("status") if isinstance(result, dict) else None
+            summary["data_keys"] = sorted(data) if isinstance(data, dict) else []
+            candidates = pin_ids_from_creation(data)
+            create_path = summary["options_path"] == "/v3/storypins/" and endpoint.path == "/resource/ApiResource/create/"
+            delete_path = summary["options_path"] == f"/v3/storypins/drafts/{self.draft_id}/" and endpoint.path == "/resource/ApiResource/delete/"
+            if create_path and isinstance(data, dict) and "story_pin_data_id" in data:
+                pin_id = data.get("id")
+                if type(pin_id) is int and pin_id > 0:
+                    pin_id = str(pin_id)
+                if isinstance(pin_id, str) and re.fullmatch(r"[0-9]+", pin_id):
+                    candidates.add(pin_id)
+            summary["pin_ids"] = sorted(candidates)
+            if response.status == 200 and summary["result_status"] == "success":
+                if create_path:
+                    self.created_pin_ids.update(candidates - draft_ids - {self.contract["board"]["id"]})
+                if delete_path and bound:
+                    self.active_draft_deleted = True
+                if self.active_draft_deleted and len(self.created_pin_ids) == 1:
+                    pin_id = next(iter(self.created_pin_ids))
+                    url = f"https://www.pinterest.com/pin/{pin_id}/"
+                    if url not in self.before_urls:
+                        self.publish_urls.add(url)
+                if self.publish_urls:
+                    self.publish_ready.set()
+        except Exception:
+            summary["parse_failed"] = True
+        try:
+            self.record_shape(summary)
+        except OSError:
+            pass
+
+    async def submit(self):
+        if self.submitted:
+            raise PublishError("DUPLICATE_SUBMIT", "This session has already reached Publish.", 4)
+        self.submitted = True
+        if self.prepared_request is None or self.inner_draft_id is None:
+            raise PublishError("UNVERIFIED_SUBMIT", "Publish requires the fully verified active draft.", 4)
+        await self.verify(*self.prepared_request)
+        self.page.on("response", lambda response: self.publish_tasks.add(asyncio.create_task(self.capture_publish(response))))
+        editor = await self.control("editor")
+        await (await self.control("publish_button", editor)).click(no_wait_after=True)
+
+    async def confirm(self, expected, details):
+        await self.publish_ready.wait()
+        if len(self.publish_urls) != 1:
+            raise PublishError("UNCONFIRMED_POST", "Publish did not yield one causally bound Pin ID.", 4)
+        url = next(iter(self.publish_urls))
+        self.post_url = url
+        await self.verify_post(url, expected, details)
+        await self.verify_public(url, expected, details)
+        return url

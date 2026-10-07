@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+### Added
+
+- Add a guarded live editor contract that binds the selected upload draft to a fresh saved board, immediate timing, exact text/link and AI disclosure before the journaled single Publish click.
+- Observe only safe response shapes and numeric IDs from the browser's own publication request; require one Story Pin create ID followed by a successful deletion of the exact active draft before claiming a published result.
+
+### Fixed
+
+- Insert non-ASCII Pinterest description characters with the browser's edit command so Draft.js saves the exact approved Unicode text.
+- Verify live Story Pin details in both the signed-in and different signed-out layouts, including exact normalized description, destination, AI label, video and owned public-board membership.
+- Delete only the fresh draft created by a successful editor acceptance after its screenshot has been recorded, preventing repeated rehearsals from accumulating drafts.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added

@@ -12,7 +12,7 @@ from pinterest_automation.browser import ADAPTER_REVISION, BROWSER_BUILD, RUNTIM
 from pinterest_automation.cli import main
 from pinterest_automation.errors import PublishError
 from pinterest_automation.media import copy_video, probe_video, read_text, validate_text
-from pinterest_automation.service import normalized, publish, reconcile
+from pinterest_automation.service import accept_ui, normalized, publish, reconcile
 from pinterest_automation.state import State, board_url, canonical, pin_url, profile_url
 
 
@@ -286,6 +286,74 @@ def test_pre_submit_contract_never_enables_publication(state):
     with pytest.raises(PublishError) as error:
         validate_contract(contract, ACCOUNT, "pre-submit")
     assert error.value.code == "INVALID_UI_CONTRACT"
+
+
+def test_live_contract_requires_recorded_selected_draft_and_board_id():
+    from pinterest_automation.browser import load_contract
+    path = str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json")
+    contract = load_contract(path, ACCOUNT, "publish")
+    assert contract["board"]["id"] == "1085297278893878117"
+    del contract["selectors"]["selected_draft"]
+    with pytest.raises(PublishError) as error:
+        validate_contract(contract, ACCOUNT, "publish")
+    assert error.value.code == "INVALID_UI_CONTRACT"
+
+
+async def test_live_acceptance_discards_its_fresh_draft_before_recording(state, arguments, tmp_path):
+    arguments.ui_contract = str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json")
+    previous = state.account("brand")["ui_contract"]
+    class Rehearsal:
+        discarded = False
+        def __init__(self, *_):
+            pass
+        async def open_editor(self, *_):
+            pass
+        async def prepare(self, *_):
+            pass
+        async def verify(self, *_):
+            pass
+        async def screenshot(self, *_):
+            path = tmp_path / "accepted.png"
+            path.write_bytes(b"evidence")
+            return path
+        async def discard_rehearsal_draft(self):
+            assert state.account("brand")["ui_contract"] == previous
+            self.discarded = True
+    instance = None
+    def make(*args):
+        nonlocal instance
+        instance = Rehearsal(*args)
+        return instance
+    output, code = await accept_ui(state, arguments, fake_session, make)
+    assert code == 0 and output["status"] == "ui_accepted" and instance.discarded
+    assert state.account("brand")["ui_contract"] != previous
+
+
+async def test_live_creation_result_requires_unique_create_and_active_draft_delete(tmp_path):
+    from pinterest_automation.browser import load_contract
+    from pinterest_automation.preflight import PinterestLivePublisher
+    class Context:
+        def set_default_timeout(self, _):
+            pass
+    class Response:
+        status = 200
+        def __init__(self, verb, path, data, request_data):
+            self.url = f"https://www.pinterest.com/resource/ApiResource/{verb}/"
+            self.request = type('Request', (), {'method': 'POST', 'post_data': request_data})()
+            self.path, self.data = path, data
+        async def json(self):
+            return {"resource": {"options": {"url": self.path}}, "resource_response": {"status": "success", "data": self.data}}
+    contract = load_contract(str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json"), ACCOUNT, "publish")
+    adapter = PinterestLivePublisher(Context(), contract, tmp_path / "diagnostics")
+    adapter.draft_id, adapter.inner_draft_id = "12345", "12346"
+    create = Response('create', '/v3/storypins/', {'id': '98765', 'story_pin_data_id': '67890'}, '{}')
+    wrong_delete = Response('delete', '/v3/storypins/drafts/another/', {}, '{"draft_id":"another"}')
+    own_delete = Response('delete', '/v3/storypins/drafts/12345/', {}, '{"draft_id":"12345"}')
+    await adapter.capture_publish(create)
+    await adapter.capture_publish(wrong_delete)
+    assert adapter.publish_urls == set()
+    await adapter.capture_publish(own_delete)
+    assert adapter.publish_urls == {"https://www.pinterest.com/pin/98765/"}
 
 
 def test_saved_editor_text_requires_save_after_edit_and_get_issued_after_save():

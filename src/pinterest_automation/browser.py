@@ -39,7 +39,7 @@ def authenticated_url(value: str):
 
 
 def validate_contract(value: object, expected: dict, stage="publish") -> dict:
-    if isinstance(value, dict) and value.get("schema_version") == "1.1.0":
+    if isinstance(value, dict) and value.get("schema_version") in {"1.1.0", "1.2.0"}:
         from .preflight import validate_preflight_contract
         return validate_preflight_contract(value, expected, stage)
     keys = {"schema_version", "target", "editor_url", "selectors", "labels"}
@@ -150,6 +150,9 @@ def editor_adapter(context, contract, diagnostics):
     if contract["schema_version"] == "1.1.0":
         from .preflight import PinterestPreflight
         return PinterestPreflight(context, contract, diagnostics)
+    if contract["schema_version"] == "1.2.0":
+        from .preflight import PinterestLivePublisher
+        return PinterestLivePublisher(context, contract, diagnostics)
     return PinterestEditor(context, contract, diagnostics)
 
 

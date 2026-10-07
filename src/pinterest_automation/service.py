@@ -199,6 +199,8 @@ async def accept_ui(state: State, args, session_factory=browser_session, adapter
                             raise PublishError("ACCEPTANCE_EVIDENCE_MISSING", "Cannot record the visible preflight screenshot.", 3)
                         with evidence.open("rb") as stream:
                             digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                        if contract["schema_version"] in {"1.1.0", "1.2.0"}:
+                            await adapter.discard_rehearsal_draft()
                         state.accept_ui(args.account, {"adapter_revision": ADAPTER_REVISION, "runtime": RUNTIME, "browser_build": BROWSER_BUILD,
                             "confirmed_at": datetime.now(timezone.utc).isoformat(), "evidence_sha256": digest,
                             "evidence_path": str(evidence), "contract": contract})
