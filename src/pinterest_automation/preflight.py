@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .browser import PinterestEditor, authenticated_url, browser_session, observed_pin_url
+from . import human
 from .errors import PublishError
 from .state import board_url, pinterest_url
 
@@ -183,20 +184,13 @@ class PinterestPreflight(PinterestEditor):
                 continue
             boundary = self.request_sequence
             await self.pre_submit_click(control, name)
-            if name == "description":
-                await control.press("Meta+A" if sys.platform == "darwin" else "Control+A")
-                await control.press("Backspace")
-                for index, line in enumerate(value.split("\n")):
-                    if index:
-                        await control.press("Enter")
-                    for segment in re.findall(r"[\x00-\x7f]+|[^\x00-\x7f]+", line):
-                        if segment.isascii():
-                            await control.press_sequentially(segment, delay=5)
-                        else:
-                            if not await control.evaluate('(element, text) => document.execCommand("insertText", false, text)', segment):
-                                raise PublishError("TEXT_MISMATCH", "Browser could not insert Unicode description text.")
-            else:
-                await control.fill(value)
+            # The rehearsal types exactly as the publisher does: at a pace a
+            # hand produces, inserting only what a keyboard cannot type. The
+            # old path left 5 ms between keystrokes and pushed Unicode runs in
+            # through execCommand, which puts text in with no keystroke at all.
+            await control.press("Meta+A" if sys.platform == "darwin" else "Control+A")
+            await control.press("Backspace")
+            await human.type_segments(self.page, value)
             await control.press("Tab")
             await self.wait_evidence(lambda: self.evidence.field_saved(self.draft_id, name, value, boundary))
             if await self.text_value(name, editor) != value:

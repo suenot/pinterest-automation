@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Type the Pin title, description and link instead of `fill`, which hands a field its whole value with no keystroke behind it. An empty value is still a clear rather than a typed empty string.
+- Type the rehearsal's description the same way the publisher types it. The preflight used `press_sequentially(delay=5)` for ASCII and `execCommand("insertText")` for Unicode runs; a rehearsal that enters text differently from the publisher is not a rehearsal of the publisher.
+
+### Added
+
+- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste behind an opt-in that is off by default. Kept in step with the copies in the other publishers, which are standalone repositories sharing no package. The measurements behind it are in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`.
+- Test that fails the build if any module in the package dispatches a browser event or puts text in without keystrokes through `execCommand`, `fill`, `insert_text` or `press_sequentially`.
+
 ## [0.3.1] - 2026-10-08
 
 ### Fixed

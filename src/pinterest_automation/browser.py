@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
+from . import human
 from .errors import PublishError
 from .state import board_url, pin_url, pinterest_url, private_dir, profile_url
 
@@ -340,13 +341,26 @@ class PinterestEditor:
             raise PublishError("UPLOAD_UNCONFIRMED", "Editor file bytes differ from the validated private upload copy.", 3)
         await self.state_label("upload_ready", "upload_ready", editor, "UPLOAD_NOT_READY")
 
+    async def enter_field(self, control, value):
+        """Clear a field and type the value into it.
+
+        fill() hands the field its whole value with no keystroke behind it,
+        which is a page's plainest sign that nobody typed. An empty value is
+        still a clear, not a typed empty string.
+        """
+        await human.click(self.page, control)
+        await control.press("ControlOrMeta+A")
+        await control.press("Backspace")
+        if value:
+            await human.type_segments(self.page, value)
+
     async def prepare(self, video, details):
         editor = await self.control("editor")
         self.video_name, self.video_sha256 = video.name, details["video_sha256"]
         await (await self.control("upload", editor, visible=False)).set_input_files(str(video))
         await self.verify_upload(editor)
         for name in ("title", "description", "link"):
-            await (await self.control(name, editor)).fill(details[name] or "")
+            await self.enter_field(await self.control(name, editor), details[name] or "")
         await self.set_board(details, editor)
         for name in ("ai_modified", "ai_generated_person"):
             await self.set_ai(name, details[name], editor)
