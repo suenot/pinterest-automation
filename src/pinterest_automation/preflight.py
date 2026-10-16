@@ -190,7 +190,8 @@ class PinterestPreflight(PinterestEditor):
             # through execCommand, which puts text in with no keystroke at all.
             await control.press("Meta+A" if sys.platform == "darwin" else "Control+A")
             await control.press("Backspace")
-            await human.type_segments(self.page, value)
+            await human.enter_text(self.page, control, value,
+                                   read_back=lambda: self.text_value(name, editor))
             await control.press("Tab")
             await self.wait_evidence(lambda: self.evidence.field_saved(self.draft_id, name, value, boundary))
             if await self.text_value(name, editor) != value:

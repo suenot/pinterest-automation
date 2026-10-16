@@ -341,18 +341,22 @@ class PinterestEditor:
             raise PublishError("UPLOAD_UNCONFIRMED", "Editor file bytes differ from the validated private upload copy.", 3)
         await self.state_label("upload_ready", "upload_ready", editor, "UPLOAD_NOT_READY")
 
-    async def enter_field(self, control, value):
-        """Clear a field and type the value into it.
+    async def enter_field(self, name, control, editor, value):
+        """Clear a field, then enter the value the way a person would.
 
         fill() hands the field its whole value with no keystroke behind it,
-        which is a page's plainest sign that nobody typed. An empty value is
-        still a clear, not a typed empty string.
+        which is a page's plainest sign that nobody typed. A title or a link
+        is short enough to retype, so it is typed; a description is written
+        before the upload and pasted, which is what the editor sees from a
+        person. An empty value is a clear, not a typed empty string.
         """
         await human.click(self.page, control)
         await control.press("ControlOrMeta+A")
         await control.press("Backspace")
         if value:
-            await human.type_segments(self.page, value)
+            await human.enter_text(
+                self.page, control, value,
+                read_back=lambda: self.text_value(name, editor))
 
     async def prepare(self, video, details):
         editor = await self.control("editor")
@@ -360,7 +364,8 @@ class PinterestEditor:
         await (await self.control("upload", editor, visible=False)).set_input_files(str(video))
         await self.verify_upload(editor)
         for name in ("title", "description", "link"):
-            await self.enter_field(await self.control(name, editor), details[name] or "")
+            await self.enter_field(name, await self.control(name, editor), editor,
+                                   details[name] or "")
         await self.set_board(details, editor)
         for name in ("ai_modified", "ai_generated_person"):
             await self.set_ai(name, details[name], editor)
