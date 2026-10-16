@@ -17,6 +17,24 @@ All notable changes to this project are documented here. The format follows Keep
   field again rather than an unexplained `TECHNICAL_FAILURE`. Text that stands
   in the control and is still not saved now fails as `TEXT_NOT_SAVED`, and a
   control that never steadies as `TEXT_NOT_ENTERED`.
+- Wait for the editor to answer before entering anything into it. Pinterest
+  keeps the Create Pin main thread for minutes at a time while it works
+  through a large upload, and every driver action needs that thread: the ones
+  with a deadline wait it out on an element that is sitting perfectly still,
+  and the mouse and keyboard, which have no deadline, never return at all. A
+  publication of a 74 MB video on 2026-10-16 spent 60 seconds in
+  `scroll_into_view_if_needed` on a motionless title field, three times over,
+  and a rehearsal spent three 150-second attempts on the link. Each field now
+  waits for a trivial page script to answer promptly before it is entered, and
+  an editor that never answers fails as `EDITOR_BUSY` instead of as a stalled
+  request.
+- Click a control without the driver's stability contract. Its scroll refuses
+  to act until an element has held the same box across two animation frames,
+  which a page re-rendering under an upload does not always give it; a hand
+  does not wait for a page to hold still either. The control is scrolled into
+  view by the page's own `scrollIntoView`, and its box is read a second time
+  after the approach, so a control that moved under the hand is still pressed
+  where it now is.
 - Click a Pin text field the way a person clicks one, and prove it safe
   separately. The rehearsal clicked title, description and link through the
   driver, whose hit testing the editor refuses while it is busy with a large

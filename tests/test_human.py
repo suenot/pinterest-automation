@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import pathlib
 import random
 import statistics
@@ -130,3 +131,49 @@ def test_no_fabricated_or_keystrokeless_input_in_the_publisher():
             if marker in code:
                 offenders.append(f"{path.name}: {marker}")
     assert not offenders, f"Input that no hand produces: {offenders}"
+
+
+class Recorder:
+    """A page and a control that answer a click without a browser."""
+    def __init__(self, boxes):
+        self.boxes, self.calls, self.events = list(boxes), [], []
+        self.mouse = self
+
+    # Locator side.
+    async def evaluate(self, script):
+        self.calls.append(script)
+
+    async def bounding_box(self):
+        return self.boxes.pop(0) if len(self.boxes) > 1 else self.boxes[0]
+
+    async def scroll_into_view_if_needed(self, *_, **__):
+        raise AssertionError("A hand does not wait for the page to hold still.")
+
+    # Page side.
+    async def wait_for_timeout(self, _):
+        pass
+
+    async def move(self, x, y):
+        self.events.append(("move", round(x), round(y)))
+
+    async def down(self):
+        self.events.append(("down",) + self.events[-1][1:])
+
+    async def up(self):
+        self.events.append(("up",) + self.events[-2][1:])
+
+
+def test_a_click_scrolls_without_the_drivers_stability_contract():
+    """The driver's scroll waits for two still frames; a busy editor withheld them."""
+    page = Recorder([{"x": 0, "y": 0, "width": 100, "height": 20}])
+    asyncio.run(human.click(page, page, random.Random(1)))
+    assert any("scrollIntoView" in call for call in page.calls)
+    assert page.events[-1][0] == "up"
+
+
+def test_a_control_that_moves_under_the_hand_is_followed():
+    page = Recorder([{"x": 0, "y": 0, "width": 100, "height": 20},
+                     {"x": 0, "y": 400, "width": 100, "height": 20}])
+    asyncio.run(human.click(page, page, random.Random(1)))
+    pressed = [event for event in page.events if event[0] == "down"][0]
+    assert pressed[2] > 390, f"pressed at {pressed}, where the control no longer was"

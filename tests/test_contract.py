@@ -1,3 +1,4 @@
+import asyncio
 from copy import copy
 import json
 import os
@@ -444,6 +445,10 @@ def rehearsal_field_adapter(tmp_path, monkeypatch, drops, saves, replaced=0, sta
         def set_default_timeout(self, _):
             pass
 
+    class Page:
+        async def evaluate(self, *_, **__):
+            return 1
+
     class Control:
         async def press(self, _):
             # The editor replaced this control under the action in progress.
@@ -457,6 +462,7 @@ def rehearsal_field_adapter(tmp_path, monkeypatch, drops, saves, replaced=0, sta
     contract = load_contract(str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json"), ACCOUNT, "publish")
     adapter = preflight.PinterestPreflight(Context(), contract, tmp_path / "diagnostics")
     adapter.draft_id = "12345"
+    adapter.page = Page()
     editor, saved, entries, guarded = {"title": ""}, {"title": None}, [], []
 
     async def control(name, *_, **__):
@@ -534,3 +540,39 @@ async def test_an_attempt_that_stalls_without_a_deadline_is_entered_again(tmp_pa
     adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True, stalled=1)
     await adapter.enter_saved_field("title", None, "Montego Bay")
     assert entries == ["Montego Bay"]
+
+
+async def test_a_busy_editor_is_waited_for_instead_of_typed_into(tmp_path, monkeypatch):
+    """Nothing is entered while the page cannot answer a trivial script."""
+    from pinterest_automation import preflight
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True)
+    monkeypatch.setattr(preflight, "EDITOR_PROBE_SECONDS", 0.1)
+    busy = {"probes": 0}
+
+    class Busy:
+        async def evaluate(self, *_, **__):
+            busy["probes"] += 1
+            if busy["probes"] < 3:
+                await asyncio.sleep(30)      # the main thread is not coming back yet
+            assert entries == [], "text was entered while the editor was busy"
+            return 1
+
+    adapter.page = Busy()
+    await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert entries == ["Montego Bay"] and busy["probes"] == 3
+
+
+async def test_an_editor_that_never_answers_fails_as_busy(tmp_path, monkeypatch):
+    from pinterest_automation import preflight
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True)
+    monkeypatch.setattr(preflight, "EDITOR_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(preflight, "EDITOR_READY_SECONDS", 0.3)
+
+    class Dead:
+        async def evaluate(self, *_, **__):
+            await asyncio.sleep(30)
+
+    adapter.page = Dead()
+    with pytest.raises(PublishError) as error:
+        await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert error.value.code == "EDITOR_BUSY" and error.value.exit_code == 3 and entries == []

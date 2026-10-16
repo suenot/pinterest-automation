@@ -100,16 +100,36 @@ async def move_to(page, x, y, rng=random):
     page._human_cursor = (x, y)
 
 
-async def click(page, locator, rng=random):
-    """Click where a hand would land: inside the control, not dead centre."""
-    await locator.scroll_into_view_if_needed()
+async def aim(locator, across, down):
+    """Where to put the pointer in a control, as a fraction of its box."""
     box = await locator.bounding_box()
     if not box:
         raise ValueError("Control is not visible; cannot click it as a person would.")
-    x = box["x"] + box["width"] * rng.uniform(0.35, 0.65)
-    y = box["y"] + box["height"] * rng.uniform(0.35, 0.65)
+    return box["x"] + box["width"] * across, box["y"] + box["height"] * down, box
+
+
+async def click(page, locator, rng=random):
+    """Click where a hand would land: inside the control, not dead centre.
+
+    The driver's own scroll refuses to act until the element has held the same
+    box across two animation frames, and a page re-rendering under an upload
+    does not always give it two: a Pinterest publication on 2026-10-16 spent
+    60 seconds in `scroll_into_view_if_needed` on a title field that sat still
+    in the screenshot taken at the time, three times over, and published
+    nothing. A hand does not wait for a page to hold still. It scrolls, looks
+    again on the way down, and presses where the control is now, which is what
+    this does: the page's own scrollIntoView, then the box read a second time
+    after the approach.
+    """
+    await locator.evaluate("element => element.scrollIntoView({block: 'center', inline: 'nearest'})")
+    across, down = rng.uniform(0.35, 0.65), rng.uniform(0.35, 0.65)
+    x, y, box = await aim(locator, across, down)
     await move_to(page, x, y, rng)
     await page.wait_for_timeout(rng.randint(*AIM_MS))
+    moved_x, moved_y, current = await aim(locator, across, down)
+    if abs(current["x"] - box["x"]) > 1 or abs(current["y"] - box["y"]) > 1:
+        await move_to(page, moved_x, moved_y, rng)   # it moved under the hand
+        await page.wait_for_timeout(rng.randint(*AIM_MS))
     await page.mouse.down()
     await page.wait_for_timeout(rng.randint(*PRESS_MS))
     await page.mouse.up()

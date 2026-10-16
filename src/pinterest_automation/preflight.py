@@ -25,6 +25,8 @@ FIELD_SAVE_SECONDS = 45    # how long one field's own save may take
 FIELD_ATTEMPT_SECONDS = 150  # how long one attempt at entering a field may take
 FIELD_ATTEMPTS = 3         # how often a field the editor dropped is entered again
 UPLOAD_DRAFT_SECONDS = 300 # how long Pinterest may take to make the uploaded draft
+EDITOR_PROBE_SECONDS = 5   # how long a trivial page script may take before the editor counts as busy
+EDITOR_READY_SECONDS = 600 # how long to wait for a busy editor to answer again
 
 
 class EditorEvidence:
@@ -169,6 +171,33 @@ class PinterestPreflight(PinterestEditor):
         if await (await self.control("selected_board_label", editor)).inner_text() != self.contract["board"]["name"]:
             raise PublishError("BOARD_MISMATCH", "Editor selected board name differs from the inspected exact board.")
 
+    async def editor_ready(self, seconds=None):
+        """Wait until the page answers a trivial script again.
+
+        Pinterest keeps the editor's main thread for minutes at a time while it
+        works through a large upload, and every driver action needs that
+        thread. The ones with a deadline wait it out on an element that is
+        sitting perfectly still -- `scroll_into_view_if_needed` did exactly
+        that for 60 seconds on a title field, three times, in the publication
+        of 2026-10-16 -- and the mouse and the keyboard, which have no
+        deadline of their own, simply never return. So nothing is entered
+        until the editor is answering again.
+        """
+        seconds = EDITOR_READY_SECONDS if seconds is None else seconds
+        # One deadline at a time: a timeout nested inside another can convert
+        # the outer one's cancellation into its own and leave that outer
+        # deadline with nothing left to fire, so the budget here is kept on the
+        # clock and only the single probe runs under a timeout.
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                async with asyncio.timeout(EDITOR_PROBE_SECONDS):
+                    await self.page.evaluate("1")
+                    return
+            except TimeoutError:
+                continue
+        raise PublishError("EDITOR_BUSY", "The editor stopped answering after the upload and did not come back; Pinterest is still working through this video.", 3)
+
     async def enter_saved_field(self, name, editor, value):
         """Enter one field and keep it only once the draft's own save carries it.
 
@@ -184,6 +213,7 @@ class PinterestPreflight(PinterestEditor):
         for attempt in range(FIELD_ATTEMPTS):
             last = attempt + 1 == FIELD_ATTEMPTS
             boundary = 0
+            await self.editor_ready()
             try:
                 async with asyncio.timeout(FIELD_ATTEMPT_SECONDS):
                     control = await self.control(name, editor)
@@ -251,6 +281,7 @@ class PinterestPreflight(PinterestEditor):
         self.draft_id = new_ids.pop()
         for name in ("title", "description", "link"):
             await self.enter_saved_field(name, editor, details[name] or "")
+        await self.editor_ready()
         await self.pre_submit_click(await self.control("board_menu", editor), "board menu")
         option = await self.control("board_option")
         if await option.inner_text() != self.contract["board"]["name"]:
