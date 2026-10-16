@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Fixed
 
+- Accept a video whose container writes `major_brand` twice. ffprobe joins
+  repeated tags with a semicolon, so a HyperFrames render reporting
+  `isom;isom` was refused with `INVALID_MEDIA` although it is an ordinary MP4.
 - Type the Pin title, description and link instead of `fill`, which hands a field its whole value with no keystroke behind it. An empty value is still a clear rather than a typed empty string.
 - Type the rehearsal's description the same way the publisher types it. The preflight used `press_sequentially(delay=5)` for ASCII and `execCommand("insertText")` for Unicode runs; a rehearsal that enters text differently from the publisher is not a rehearsal of the publisher.
 

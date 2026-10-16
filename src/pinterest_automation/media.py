@@ -88,7 +88,10 @@ def probe_video(path: Path):
         if video["codec_name"] not in {"h264", "hevc"} or not 4 <= float(document["format"]["duration"]) <= 300 or min(video["width"], video["height"]) < 1:
             raise PublishError("INVALID_MEDIA", "Video must contain H.264/H.265, a duration of 4–300 seconds and positive dimensions.")
         container = document["format"]
-        brand = container.get("tags", {}).get("major_brand", "").strip()
+        # ffprobe joins repeated container tags with a semicolon, and some
+        # muxers write major_brand twice ("isom;isom"). The brand is the value,
+        # not the repetition, so read the first one.
+        brand = container.get("tags", {}).get("major_brand", "").split(";")[0].strip()
         mp4_brands = {"isom", "mp41", "mp42", "M4V", "M4VH", "M4VP", "avc1", "hvc1", "hev1", "MSNV", "dash", "cmfc", "cmfs"}
         if "mov" not in container["format_name"].split(",") or (brand not in mp4_brands and not (len(brand) == 4 and brand.startswith("iso") and brand[3] in "23456789")):
             raise PublishError("INVALID_MEDIA", "Video bytes must be an MP4/M4V container.")

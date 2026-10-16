@@ -108,6 +108,21 @@ def test_video_boundaries(video, monkeypatch, duration, codec, container, valid)
             probe_video(video)
 
 
+@pytest.mark.parametrize("brand,valid", [("isom", True), ("isom;isom", True), ("mp42;mp42;mp42", True),
+                                         ("iso6", True), ("qt  ", False), ("qt  ;qt  ", False), ("", False)])
+def test_repeated_container_brand_tags_are_read_as_one_brand(video, monkeypatch, brand, valid):
+    """ffprobe joins repeated tags, and some muxers write major_brand twice."""
+    import pinterest_automation.media as media
+    document = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": 90, "height": 160}],
+                "format": {"duration": "32.7", "format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": {"major_brand": brand}}}
+    monkeypatch.setattr(media.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, json.dumps(document).encode()))
+    if valid:
+        probe_video(video)
+    else:
+        with pytest.raises(PublishError):
+            probe_video(video)
+
+
 @pytest.mark.parametrize("fail,expected", [("verify", 3), ("account", 2), ("submit", 4), ("confirm", 4), ("interrupt", 4), (None, 0)])
 async def test_durable_boundary_and_terminal_cache(state, arguments, fail, expected):
     Adapter.fail, Adapter.state = fail, state
