@@ -426,3 +426,111 @@ def test_saved_editor_text_requires_save_after_edit_and_get_issued_after_save():
     changed = {**get, "resource_response": {"status": "success", "data": []}}
     evidence.record("/resource/ApiResource/get/", changed, issued=3, started=300, finished=800)
     assert evidence.field_saved("123", "title", "Title", after=1)  # Older-issued responses cannot replace a newer snapshot.
+
+
+def rehearsal_field_adapter(tmp_path, monkeypatch, drops, saves, replaced=0, stalled=0):
+    """A preflight adapter whose editor and draft saves are driven by the test."""
+    import asyncio
+
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+    from pinterest_automation import human, preflight
+    from pinterest_automation.browser import load_contract
+
+    monkeypatch.setattr(preflight, "FIELD_SAVE_SECONDS", 0.2)
+    monkeypatch.setattr(preflight, "FIELD_ATTEMPT_SECONDS", 0.3)
+    resolved = {"controls": 0}
+
+    class Context:
+        def set_default_timeout(self, _):
+            pass
+
+    class Control:
+        async def press(self, _):
+            # The editor replaced this control under the action in progress.
+            if resolved["controls"] <= replaced:
+                raise PlaywrightTimeout("Timeout 60000ms exceeded.")
+            # Or the page script this action needs waits for a main thread
+            # that Pinterest is still giving to the upload.
+            if resolved["controls"] <= stalled:
+                await asyncio.sleep(30)
+
+    contract = load_contract(str(Path(__file__).parents[1] / "examples/caribbeanawesome.publish.json"), ACCOUNT, "publish")
+    adapter = preflight.PinterestPreflight(Context(), contract, tmp_path / "diagnostics")
+    adapter.draft_id = "12345"
+    editor, saved, entries, guarded = {"title": ""}, {"title": None}, [], []
+
+    async def control(name, *_, **__):
+        resolved["controls"] += 1
+        return Control()
+
+    async def text_value(name, _editor):
+        return editor[name]
+
+    async def guard_control(*_, **__):
+        guarded.append(True)
+
+    async def pre_submit_click(*_):
+        raise AssertionError("A text field is clicked by the mouse, not by the driver.")
+
+    async def enter_text(_page, _control, value, *_args, **_kwargs):
+        entries.append(value)
+        # The editor re-renders while Pinterest finishes with the upload: what
+        # it dropped is gone from the control and never reaches a draft save.
+        editor["title"] = "" if len(entries) <= drops else value
+        if len(entries) > drops and saves:
+            saved["title"] = value
+        adapter.evidence_changed.set()
+        return "typed"
+
+    monkeypatch.setattr(adapter, "control", control)
+    monkeypatch.setattr(adapter, "text_value", text_value)
+    monkeypatch.setattr(adapter, "guard_control", guard_control)
+    monkeypatch.setattr(adapter, "pre_submit_click", pre_submit_click)
+    monkeypatch.setattr(human, "enter_text", enter_text)
+    monkeypatch.setattr(adapter.evidence, "field_saved",
+                        lambda draft_id, name, value, after=0: draft_id == adapter.draft_id and saved[name] == value)
+    return adapter, entries, guarded
+
+
+async def test_a_field_the_editor_drops_is_entered_again(tmp_path, monkeypatch):
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=1, saves=True)
+    await adapter.enter_saved_field("title", None, "Montego Bay Is Closer to New York Than Denver Is")
+    assert entries == ["Montego Bay Is Closer to New York Than Denver Is"] * 2
+    # Every entry still proves the field cannot reach Publish before it is touched.
+    assert len(guarded) == len(entries)
+
+
+async def test_a_field_the_editor_keeps_but_never_saves_is_not_retyped(tmp_path, monkeypatch):
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=False)
+    with pytest.raises(PublishError) as error:
+        await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert error.value.code == "TEXT_NOT_SAVED" and error.value.exit_code == 3 and entries == ["Montego Bay"]
+
+
+async def test_a_field_the_editor_keeps_dropping_fails_after_its_attempts(tmp_path, monkeypatch):
+    from pinterest_automation import preflight
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=9, saves=False)
+    with pytest.raises(PublishError) as error:
+        await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert error.value.code == "TEXT_NOT_SAVED" and len(entries) == preflight.FIELD_ATTEMPTS
+
+
+async def test_a_control_the_editor_replaces_mid_action_is_entered_again(tmp_path, monkeypatch):
+    """A Playwright timeout on a replaced control is this field again, not a failed request."""
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True, replaced=1)
+    await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert entries == ["Montego Bay"]
+
+
+async def test_a_control_that_never_steadies_fails_with_its_own_code(tmp_path, monkeypatch):
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True, replaced=9)
+    with pytest.raises(PublishError) as error:
+        await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert error.value.code == "TEXT_NOT_ENTERED" and error.value.exit_code == 3 and entries == []
+
+
+async def test_an_attempt_that_stalls_without_a_deadline_is_entered_again(tmp_path, monkeypatch):
+    """A step with no deadline of its own cannot hold the whole request."""
+    adapter, entries, guarded = rehearsal_field_adapter(tmp_path, monkeypatch, drops=0, saves=True, stalled=1)
+    await adapter.enter_saved_field("title", None, "Montego Bay")
+    assert entries == ["Montego Bay"]

@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Fixed
 
+- Enter a Pin field again when the editor drops it. Pinterest re-renders the
+  Create Pin editor while it finishes with an uploaded video, and field text
+  that is not saved by then is gone: on 2026-10-16 two rehearsals and two
+  publications of a 74 MB video lost a typed title or a pasted description
+  that way, then waited out a deadline for a save that could never arrive and
+  left their drafts behind. A field whose save does not arrive, and whose text
+  is no longer in the control, is entered again, and a Playwright timeout on a
+  control that the same re-render replaced under an action in progress is that
+  field again rather than an unexplained `TECHNICAL_FAILURE`. Text that stands
+  in the control and is still not saved now fails as `TEXT_NOT_SAVED`, and a
+  control that never steadies as `TEXT_NOT_ENTERED`.
+- Click a Pin text field the way a person clicks one, and prove it safe
+  separately. The rehearsal clicked title, description and link through the
+  driver, whose hit testing the editor refuses while it is busy with a large
+  upload: three attempts at a title that nothing was covering each waited out
+  60 seconds, and the request failed with no text entered. The control is
+  still proved unable to activate Publish or submit a form before anything
+  touches it, through the same guard, which no longer clicks; the click is the
+  mouse click the text entry already makes. Each attempt now also has its own
+  deadline, because the page script a guard needs has none of its own and a
+  busy editor can leave it waiting indefinitely.
+- Wait for the uploaded draft on the upload's own deadline rather than the 60
+  seconds a control is given. Pinterest creates the sidebar draft only once it
+  has taken the whole file, and one 74 MB rehearsal spent 56 of those 60
+  seconds there; the command's own timeout still bounds the wait.
+- Run the controlled browser checks over the real input path again by
+  compressing its pauses in those checks only. Entering a title, a caption and
+  a link at a person's pace takes minutes, which no 10-second controlled
+  request can hold; the keystrokes, the mouse and the events the page receives
+  are unchanged, and the pace itself stays `test_human`'s subject.
 - Accept a video whose container writes `major_brand` twice. ffprobe joins
   repeated tags with a semicolon, so a HyperFrames render reporting
   `isom;isom` was refused with `INVALID_MEDIA` although it is an ordinary MP4.

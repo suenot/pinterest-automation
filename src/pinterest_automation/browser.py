@@ -188,7 +188,15 @@ class PinterestEditor:
         if await (await self.control(name, scope)).inner_text() != self.contract["labels"][label]:
             raise PublishError(code, f"Cannot verify the requested {name} state.")
 
-    async def pre_submit_click(self, locator, description):
+    async def guard_control(self, locator, description, click=False):
+        """Prove a preparation control cannot reach Publish, and optionally click it.
+
+        The proof is the point: no control is touched before it is shown to be
+        neither the final Publish element nor anything that activates it or
+        submits a form. Clicking is separate because a text field is clicked
+        the way a person clicks one, through the mouse, which is also the only
+        click that survives an editor that is busy with a large upload.
+        """
         locator = await one(locator, description)
         target = await locator.element_handle()
         final = None
@@ -204,7 +212,8 @@ class PinterestEditor:
                 }""", final
             ):
                 raise PublishError("UNSAFE_PRE_SUBMIT_CONTROL", f"{description} can activate Publish or submit an HTML form.", 3)
-            await target.click()
+            if click:
+                await target.click()
         finally:
             for handle in (target, final):
                 if handle is not None:
@@ -212,6 +221,9 @@ class PinterestEditor:
                         await handle.dispose()
                     except Exception:
                         pass
+
+    async def pre_submit_click(self, locator, description):
+        await self.guard_control(locator, description, click=True)
 
     async def actor(self, name, expected, scope=None):
         link = await self.control(name, scope)

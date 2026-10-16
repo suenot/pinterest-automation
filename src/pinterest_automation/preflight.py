@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from playwright.async_api import TimeoutError as PlaywrightTimeout
+
 from .browser import PinterestEditor, authenticated_url, browser_session, observed_pin_url
 from . import human
 from .errors import PublishError
@@ -18,6 +20,11 @@ from .state import board_url, pinterest_url
 SELECTORS = {"current_actor_link", "editor", "upload", "upload_ready", "title", "description", "link", "board_menu", "board_option",
              "selected_board_label", "ai_modified", "ai_generated_person", "publish_button", "board_title", "board_visibility", "board_collaboration"}
 POST_SELECTORS = {"post", "post_actor_link", "post_board_link", "post_title", "post_description", "post_link", "post_video"}
+EVIDENCE_SECONDS = 60      # how long one piece of saved-draft evidence may take
+FIELD_SAVE_SECONDS = 45    # how long one field's own save may take
+FIELD_ATTEMPT_SECONDS = 150  # how long one attempt at entering a field may take
+FIELD_ATTEMPTS = 3         # how often a field the editor dropped is entered again
+UPLOAD_DRAFT_SECONDS = 300 # how long Pinterest may take to make the uploaded draft
 
 
 class EditorEvidence:
@@ -121,8 +128,8 @@ class PinterestPreflight(PinterestEditor):
         self.observers.add(task)
         task.add_done_callback(self.observers.discard)
 
-    async def wait_evidence(self, condition):
-        async with asyncio.timeout(60):
+    async def wait_evidence(self, condition, seconds=EVIDENCE_SECONDS):
+        async with asyncio.timeout(seconds):
             while not condition():
                 self.evidence_changed.clear()
                 await self.evidence_changed.wait()
@@ -162,40 +169,88 @@ class PinterestPreflight(PinterestEditor):
         if await (await self.control("selected_board_label", editor)).inner_text() != self.contract["board"]["name"]:
             raise PublishError("BOARD_MISMATCH", "Editor selected board name differs from the inspected exact board.")
 
+    async def enter_saved_field(self, name, editor, value):
+        """Enter one field and keep it only once the draft's own save carries it.
+
+        The editor re-renders while Pinterest finishes with the uploaded
+        video, and whatever is not saved when it does is gone. Two rehearsals
+        of a 74 MB upload on 2026-10-16 entered their text into exactly that
+        window: one lost the title it had just typed, the other the pasted
+        description, and each then waited out its deadline for a save that
+        could never arrive and left its draft behind. Text the editor dropped
+        is entered again; text that stands in the control and is still not
+        saved is a failure rather than something to retype.
+        """
+        for attempt in range(FIELD_ATTEMPTS):
+            last = attempt + 1 == FIELD_ATTEMPTS
+            boundary = 0
+            try:
+                async with asyncio.timeout(FIELD_ATTEMPT_SECONDS):
+                    control = await self.control(name, editor)
+                    # A no-op fill may not autosave (notably an omitted link).
+                    # Reuse a fresh matching snapshot rather than wait for a
+                    # nonexistent edit.
+                    if await self.text_value(name, editor) != value:
+                        boundary = self.request_sequence
+                        # Proved safe here, but clicked by the mouse inside
+                        # enter_text: the editor's own hit testing refuses a
+                        # driver's click on a field while it is busy with a
+                        # large upload, and waited out 60 s on each of three
+                        # rehearsal attempts at a title nothing was covering.
+                        await self.guard_control(control, name)
+                        # The rehearsal enters text exactly as the publisher
+                        # does: at a pace a hand produces, pasting what a person
+                        # pastes and inserting only what a keyboard cannot type.
+                        # The old path left 5 ms between keystrokes and pushed
+                        # Unicode runs in through execCommand, which puts text in
+                        # with no keystroke at all.
+                        await control.press("Meta+A" if sys.platform == "darwin" else "Control+A")
+                        await control.press("Backspace")
+                        await human.enter_text(self.page, control, value,
+                                               read_back=lambda: self.text_value(name, editor))
+                        await control.press("Tab")
+            except (PlaywrightTimeout, TimeoutError) as exc:
+                # The re-render that drops the text also replaces the control
+                # under the action in progress: the action then waits out its
+                # own deadline on an element that is gone, or, where the page
+                # script it needs has no deadline of its own, waits for a main
+                # thread that Pinterest is still giving to the upload. Either
+                # is this field to enter again rather than the request to fail;
+                # the publisher reported one as an unexplained
+                # TECHNICAL_FAILURE on 2026-10-16, with a correct title and an
+                # empty description.
+                if last:
+                    reason = " ".join(str(exc).split())[:160] or type(exc).__name__
+                    raise PublishError("TEXT_NOT_ENTERED", f"Editor {name} could not be entered; the editor did not stay still for it ({reason}).", 3) from exc
+                continue
+            try:
+                await self.wait_evidence(lambda: self.evidence.field_saved(self.draft_id, name, value, boundary), FIELD_SAVE_SECONDS)
+            except TimeoutError:
+                if not last and await self.text_value(name, editor) != value:
+                    continue  # The editor dropped it; enter it again.
+                raise PublishError("TEXT_NOT_SAVED", f"Editor {name} was entered but its draft never saved that exact text.", 3) from None
+            if await self.text_value(name, editor) != value:
+                raise PublishError("TEXT_MISMATCH", f"Editor {name} changed while its draft was saved.")
+            return
+
     async def prepare(self, video, details):
         editor = await self.control("editor")
         self.video_name, self.video_sha256 = video.name, details["video_sha256"]
         previous_ids = set(await self.page.locator('[data-test-id^="pinDraft-"]').evaluate_all('nodes=>nodes.map(node=>node.getAttribute("data-test-id").slice(9))'))
         await (await self.control("upload", editor, visible=False)).set_input_files(str(video))
         await self.verify_upload(editor)
-        await self.page.wait_for_function("previous => Array.from(document.querySelectorAll('[data-test-id^=\"pinDraft-\"]')).some(node => !previous.includes(node.getAttribute('data-test-id').slice(9)))", arg=list(previous_ids))
+        # Pinterest creates the sidebar draft when it has taken the whole
+        # upload, which is minutes of its work for a file near the 200 MB
+        # limit: one 74 MB rehearsal took 56 s of the 60 s a control is given.
+        await self.page.wait_for_function("previous => Array.from(document.querySelectorAll('[data-test-id^=\"pinDraft-\"]')).some(node => !previous.includes(node.getAttribute('data-test-id').slice(9)))",
+                                          arg=list(previous_ids), timeout=UPLOAD_DRAFT_SECONDS * 1000)
         current_ids = set(await self.page.locator('[data-test-id^="pinDraft-"]').evaluate_all('nodes=>nodes.map(node=>node.getAttribute("data-test-id").slice(9))'))
         new_ids = current_ids - previous_ids
         if len(new_ids) != 1:
             raise PublishError("DRAFT_UNVERIFIED", "Cannot bind exactly one newly uploaded editor draft.", 3)
         self.draft_id = new_ids.pop()
         for name in ("title", "description", "link"):
-            value = details[name] or ""
-            control = await self.control(name, editor)
-            if await self.text_value(name, editor) == value:
-                # A no-op fill may not autosave (notably an omitted link). Reuse
-                # a fresh matching snapshot rather than wait for a nonexistent edit.
-                await self.wait_evidence(lambda: self.evidence.field_saved(self.draft_id, name, value))
-                continue
-            boundary = self.request_sequence
-            await self.pre_submit_click(control, name)
-            # The rehearsal types exactly as the publisher does: at a pace a
-            # hand produces, inserting only what a keyboard cannot type. The
-            # old path left 5 ms between keystrokes and pushed Unicode runs in
-            # through execCommand, which puts text in with no keystroke at all.
-            await control.press("Meta+A" if sys.platform == "darwin" else "Control+A")
-            await control.press("Backspace")
-            await human.enter_text(self.page, control, value,
-                                   read_back=lambda: self.text_value(name, editor))
-            await control.press("Tab")
-            await self.wait_evidence(lambda: self.evidence.field_saved(self.draft_id, name, value, boundary))
-            if await self.text_value(name, editor) != value:
-                raise PublishError("TEXT_MISMATCH", f"Editor {name} changed while its draft was saved.")
+            await self.enter_saved_field(name, editor, details[name] or "")
         await self.pre_submit_click(await self.control("board_menu", editor), "board menu")
         option = await self.control("board_option")
         if await option.inner_text() != self.contract["board"]["name"]:

@@ -82,6 +82,28 @@ class Fixture:
             return
         await route.fulfill(status=200, content_type="text/html", body=body)
 
+
+@pytest.fixture(autouse=True)
+def quick_hands(monkeypatch):
+    """Keep the input path these checks exercise, without its pauses.
+
+    The publisher enters text at a person's pace, which is minutes over a
+    request here and a 10-second controlled check cannot hold it. What the
+    pace itself must look like is `test_human`'s subject; what these checks
+    watch is which events the page receives and what the publisher does with
+    them, so the intervals are compressed and the keystrokes are not.
+    """
+    from pinterest_automation import human
+    monkeypatch.setattr(human, "KEY_LOGNORM", (0.0, 0.05))
+    monkeypatch.setattr(human, "KEY_MINIMUM_MS", 1)
+    monkeypatch.setattr(human, "MOVE_STEPS", (2, 3))
+    monkeypatch.setattr(human, "PASTE_READ_MS", 10)
+    for name in ("WORD_BREAK_MS", "SENTENCE_BREAK_MS", "LINE_BREAK_MS", "SHIFT_MS",
+                 "THINK_MS", "TYPO_NOTICE_MS", "TYPO_RECOVER_MS", "MOVE_STEP_MS",
+                 "PRESS_MS", "AIM_MS", "SETTLE_MS"):
+        monkeypatch.setattr(human, name, (0, 1))
+
+
 @pytest.fixture
 async def browser(tmp_path, arguments, video, monkeypatch):
     profile = tmp_path / "profile"
