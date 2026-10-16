@@ -275,7 +275,7 @@ async def test_new_tracked_result_is_canonicalized(browser, state, arguments):
     context, fixture, session = browser
     fixture.result_href = PIN + "?share=1#fragment"
     output, code = await publish(state, arguments, session)
-    assert code == 0 and output["post_url"] == PIN and fixture.clicks == 1
+    assert code == 0 and output["post_url"] == PIN and fixture.clicks == 1, (code, output)
 
 
 async def test_relative_actor_uses_owner_document_and_empty_href_fails(browser, tmp_path, arguments):

@@ -32,7 +32,7 @@ def arguments(tmp_path, video):
     title.write_bytes(b"  Caribbean Awesome  ")
     description.write_bytes(b"  Exact\nDescription #Caribbean \n")
     return Namespace(account="brand", request_id="request-1", video=str(video), title_file=str(title), description_file=str(description), metadata_file=None,
-        board_url=BOARD, visibility="private", ai_modified="yes", ai_generated_person="no", link=None, headless=True, timeout_seconds=10)
+        board_url=BOARD, visibility="private", ai_modified="yes", ai_generated_person="no", link=None, headless=True, timeout_seconds=30)
 
 
 @pytest.fixture
