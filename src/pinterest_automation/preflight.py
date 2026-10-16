@@ -288,6 +288,7 @@ class PinterestPreflight(PinterestEditor):
             raise PublishError("BOARD_MISMATCH", "Board option differs from the inspected rehearsal board.")
         await self.pre_submit_click(option, "rehearsal board option")
         await self.selected_board(details, editor)
+        await self.editor_ready()
         for name in ("ai_modified", "ai_generated_person"):
             await self.set_ai(name, details[name], editor)
 
@@ -486,6 +487,12 @@ class PinterestLivePublisher(PinterestPreflight):
             raise PublishError("DRAFT_UNVERIFIED", "The active draft's final board, timing, text, link and AI state were not saved together after the last edit.", 3) from None
         self.inner_draft_id = self.evidence.drafts[self.draft_id]["draft"]["id"]
         self.before_urls.update(await self.existing_pin_urls())
+        # The sole Publish click is a driver click, and a driver click on a
+        # page that has stopped answering waits out its deadline after the
+        # journal has already recorded the submission. Verification runs before
+        # that boundary, so an editor that is not answering fails here, with
+        # nothing submitted, rather than leaving an uncertain request behind.
+        await self.editor_ready()
 
     def record_shape(self, summary):
         path = self.diagnostics / "publish-response-shapes.jsonl"
