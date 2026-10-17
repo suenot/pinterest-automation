@@ -1,4 +1,5 @@
 """Controlled intercepted pages only; never contact a live Pinterest account."""
+import asyncio
 import base64
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -332,3 +333,89 @@ async def test_live_rehearsal_rejects_publish_and_unbound_pin_navigation(browser
     with pytest.raises(PublishError) as error:
         await adapter.confirm(ACCOUNT, details)
     assert error.value.code == "UNCONFIRMED_POST" and adapter.post_url is None and fixture.clicks == 0
+
+
+def closeup_page(fixture, details, closeups=1, late_media=True):
+    """Pinterest's own closeup markup, with related Pins hydrated around it."""
+    source = "data:video/mp4;base64," + base64.b64encode(fixture.video.read_bytes()).decode()
+    player = '<video data-test-id="duplo-hls-video" style="width:300px;height:150px" preload=auto'
+    main = (player + '></video><script>setTimeout(() => {document.querySelector(\'[data-test-id="closeup-body"] video\').src=' + json.dumps(source) + ';}, 600)</script>'
+            if late_media else player + f' src="{source}"></video>')
+    body = ''.join(f'''<div data-test-id="closeup-body"><div data-test-id="description-content-container">
+        <a id=post_actor_link href="{fixture.actor}">Caribbean Awesome</a>
+        <div data-test-id="pinTitle">{escape(details['title'])}</div>
+        <div data-test-id="structured-description">{escape(" ".join(details['description'].split()))}</div>
+        </div>{main}<span>AI modified</span></div>''' for _ in range(closeups))
+    related = f'''<div data-test-id="relatedPins"><div data-test-id="description-content-container">
+        <a id=post_actor_link href="https://www.pinterest.com/someoneelse/">Someone Else</a>
+        <div data-test-id="pinTitle">Another Pin entirely</div>
+        <div data-test-id="structured-description">Not this request</div>
+        </div><video data-test-id="duplo-hls-video" src="{source}"></video><span>AI modified</span></div>'''
+    return body + related
+
+
+async def live_readback(browser, tmp_path, arguments, **shape):
+    from pinterest_automation.preflight import PinterestPreflight
+    context, fixture, session = browser
+    contract = deepcopy(CONTRACT)
+    contract["scope"] = "publish"
+    adapter = PinterestPreflight(context, contract, tmp_path / "diagnostics")
+    adapter.page = await context.new_page()
+    adapter.media_attempts, adapter.media_interval = 40, 200
+    details = normalized(arguments)
+    # A request carries metadata exactly as Pinterest renders it back.
+    details["title"] = details["title"].strip()
+    fixture.post = lambda: closeup_page(fixture, details, **shape)
+    adapter.verify_board = lambda *_: asyncio.sleep(0)
+    board = fixture.route
+    async def routes(route):
+        if route.request.url == BOARD:
+            await route.fulfill(status=200, content_type="text/html",
+                               body='<a href="/pin/' + PIN.split("/")[4] + '/">This Pin</a>')
+            return
+        await board(route)
+    await context.route("**/*", routes)
+    return adapter, details
+
+
+async def test_live_readback_ignores_related_pins_and_waits_for_late_metadata(browser, tmp_path, arguments):
+    adapter, details = await live_readback(browser, tmp_path, arguments)
+    await adapter.verify_post(PIN, ACCOUNT, details)
+    assert browser[1].clicks == 0
+
+
+async def test_live_readback_refuses_an_ambiguous_closeup(browser, tmp_path, arguments):
+    adapter, details = await live_readback(browser, tmp_path, arguments, closeups=2)
+    with pytest.raises(PublishError) as error:
+        await adapter.verify_post(PIN, ACCOUNT, details)
+    assert error.value.code == "POST_UNCONFIRMED"
+
+
+async def test_live_readback_refuses_a_player_that_never_reports_media(browser, tmp_path, arguments):
+    adapter, details = await live_readback(browser, tmp_path, arguments)
+    adapter.media_attempts, adapter.media_interval = 3, 50
+    fixture = browser[1]
+    fixture.post = lambda: closeup_page(fixture, details, late_media=True).replace(", 600)", ", 600000)")
+    with pytest.raises(PublishError) as error:
+        await adapter.verify_post(PIN, ACCOUNT, details)
+    assert error.value.code == "POST_UNCONFIRMED" and "video is not readable" in error.value.message
+
+
+async def test_remounted_player_is_reread_until_the_pin_video_is_readable(browser, tmp_path, arguments):
+    """A pinned element handle outlives its node; the readback must re-resolve it."""
+    context, fixture, session = browser
+    adapter, details = await adapter_ready(browser, tmp_path, arguments)
+    adapter.media_attempts, adapter.media_interval = 40, 200
+    source = "data:video/mp4;base64," + base64.b64encode(fixture.video.read_bytes()).decode()
+    original = fixture.post
+
+    def remounting_post():
+        return original().replace(
+            f'<video id=post_video src="{source}" preload=auto controls></video>',
+            '<span id=player><video id=post_video style="width:300px;height:150px"></video></span>'
+            '<script>setTimeout(() => {document.querySelector("#player").innerHTML='
+            + json.dumps(f'<video id=post_video src="{source}" preload=auto></video>') + ';}, 600)</script>')
+
+    fixture.post = remounting_post
+    await adapter.verify_post(PIN, ACCOUNT, details)
+    assert fixture.clicks == 0

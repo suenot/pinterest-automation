@@ -175,6 +175,8 @@ class PinterestEditor:
         self.video_sha256 = None
         self.prepared_request = None
         self.before_urls = set()
+        self.media_attempts = 15
+        self.media_interval = 4000
 
     def selector(self, name: str, scope=None):
         return (scope if scope is not None else self.page).locator(self.contract["selectors"][name])
@@ -433,14 +435,21 @@ class PinterestEditor:
                 raise PublishError("POST_UNCONFIRMED", "Published Pin destination differs from this request.", 4)
         elif await links.count():
             raise PublishError("POST_UNCONFIRMED", "Published Pin unexpectedly has a destination link.", 4)
-        video = await self.control("post_video", post)
-        handle = await video.element_handle()
-        try:
-            await page.wait_for_function("element => element.readyState >= 1 && element.videoWidth > 0", arg=handle)
-        finally:
-            if handle is not None:
-                await handle.dispose()
-        if not await video.evaluate("element => element.tagName === 'VIDEO' && element.readyState >= 1 && element.videoWidth > 0 && element.videoHeight > 0 && element.duration >= 4 && element.duration <= 300"):
+        # Pinterest remounts the closeup player while the upload is processed, so
+        # the control is re-read on every attempt: a pinned element handle would
+        # outlive its node and report an unreadable video forever.
+        readable = 'element => element.tagName === "VIDEO" && element.readyState >= 1 && element.videoWidth > 0 && element.videoHeight > 0 && element.duration >= 4 && element.duration <= 300'
+        for attempt in range(self.media_attempts):
+            if attempt:
+                await page.wait_for_timeout(self.media_interval)
+            try:
+                if await (await self.control("post_video", post)).evaluate(readable):
+                    break
+            except PublishError:
+                raise
+            except Exception:
+                pass
+        else:
             raise PublishError("POST_UNCONFIRMED", "Pin video is not fully accepted and readable.", 4)
         if not public:
             await self.state_label("post_status", "published", post, "POST_UNCONFIRMED")

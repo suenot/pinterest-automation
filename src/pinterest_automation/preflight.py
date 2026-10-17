@@ -373,7 +373,13 @@ class PinterestPreflight(PinterestEditor):
         await page.goto(url, wait_until="domcontentloaded")
         if observed_pin_url(page.url) != url:
             raise PublishError("POST_UNCONFIRMED", "The requested Pin redirected.", 4)
-        post = page.locator('[data-test-id="description-content-container"]')
+        # Related Pins hydrate their own closeup markup into this page, so every
+        # locator below is scoped to the opened Pin's own closeup body.
+        closeup = page.locator('[data-test-id="closeup-body"]')
+        await closeup.first.wait_for(state="visible")
+        if await closeup.count() != 1:
+            raise PublishError("POST_UNCONFIRMED", "The Pin page does not show exactly one closeup body.", 4)
+        post = closeup.locator('[data-test-id="description-content-container"]')
         await post.wait_for(state="visible")
         await self.actor("post_actor_link", expected, post)
         title = post.locator('[data-test-id="pinTitle"]')
@@ -393,12 +399,25 @@ class PinterestPreflight(PinterestEditor):
             external = await post.locator('a[href]').evaluate_all("nodes => nodes.filter(node => { const host = new URL(node.href).hostname; return host !== 'pinterest.com' && !host.endsWith('.pinterest.com'); }).length")
             if external:
                 raise PublishError("POST_UNCONFIRMED", "Published Pin unexpectedly has a destination link.", 4)
-        video = page.locator('video[data-test-id="duplo-hls-video"]')
-        await video.wait_for(state="visible")
-        media = await video.evaluate("element => ({duration: element.duration, width: element.videoWidth, height: element.videoHeight})")
-        if not 4 <= media["duration"] <= 300 or min(media["width"], media["height"]) <= 0:
+        video = closeup.locator('video[data-test-id="duplo-hls-video"]')
+        await video.first.wait_for(state="visible")
+        if await video.count() != 1:
+            raise PublishError("POST_UNCONFIRMED", "The Pin closeup does not show exactly one video.", 4)
+        # Pinterest serves the closeup before it finishes processing the upload,
+        # and the player then reports NaN, so the metadata is polled.
+        media = None
+        for attempt in range(self.media_attempts):
+            if attempt:
+                await page.wait_for_timeout(self.media_interval)
+            try:
+                media = await video.evaluate("element => ({duration: element.duration, width: element.videoWidth, height: element.videoHeight})")
+            except Exception:
+                media = None
+            if media and media["duration"] > 0 and min(media["width"], media["height"]) > 0:
+                break
+        if not media or not 4 <= media["duration"] <= 300 or min(media["width"], media["height"]) <= 0:
             raise PublishError("POST_UNCONFIRMED", "Published Pin video is not readable.", 4)
-        if details["ai_modified"] and await page.get_by_text("AI modified", exact=True).count() != 1:
+        if details["ai_modified"] and await closeup.get_by_text("AI modified", exact=True).count() != 1:
             raise PublishError("POST_UNCONFIRMED", "Published Pin AI disclosure is missing.", 4)
         if not public:
             await self.verify_board(expected, details)
