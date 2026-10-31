@@ -6,11 +6,11 @@ The CLI supports repeatable Firefox-session import into persistent Camoufox and 
 
 An initial manual run on 2026-10-06 confirmed `@caribbeanawesome`, the public owner board `caribbean-awesome-videos`, acceptance of a 12,977,531 byte 1080×1920 H.264/AAC video lasting 38.1 seconds, both AI controls, and a publicly readable video Pin. The editor showed `Publishing...` and then reset without a causal result URL. The 2026-10-07 Camoufox acceptance imported the source Firefox session without launching Firefox and rehearsed the exact topbar account, uploaded video bytes, title/description/link, public board and both AI controls through a trial of the final Publish control. No Publish click was made.
 
-The native version source is `pyproject.toml`; `CHANGELOG.md` records releases. This project follows the [Pinterest publishing plan](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/pinterest.md) and [shared publisher contract](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/contract.md).
+The native version source is `pyproject.toml`; `CHANGELOG.md` records releases. This project follows the Pinterest publishing plan and shared publisher contract.
 
 ## Install
 
-Python 3.12, `uv`, Git/SSH access to the pinned private `metadata-automation` repository, and `ffmpeg`/`ffprobe` are required. On macOS install ffmpeg with Homebrew; on Linux install ffmpeg and the platform packages required by Camoufox. Then:
+Python 3.12, `uv`, the pinned public [`metadata-automation`](https://github.com/suenot/metadata-automation) repository, and `ffmpeg`/`ffprobe` are required. On macOS install ffmpeg with Homebrew; on Linux install ffmpeg and the platform packages required by Camoufox. Then:
 
 ```sh
 uv sync --locked --python 3.12
